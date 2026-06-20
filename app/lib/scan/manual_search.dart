@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/models.dart';
 import '../data/providers.dart';
 import '../ui/widgets.dart';
-import 'version_picker.dart';
+import 'scan_session.dart';
 
 /// Manual fallback: find a card by name/set when recognition misses, then pick
 /// the exact printing + finish and add it. Uses the bundle data already on
@@ -59,17 +59,10 @@ class _ManualSearchScreenState extends ConsumerState<ManualSearchScreen> {
   }
 
   Future<void> _pick(Printing p) async {
-    final candidate = Candidate(
-      illustrationId: p.illustrationId,
-      scryfallId: p.scryfallId,
-      face: p.face,
-      distance: 0,
-      printing: p,
-    );
-    final added = await showVersionPicker(context, ref, candidate);
-    if (added == true && mounted) {
+    ref.read(scanSessionProvider.notifier).add(p);
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Added to your collection')),
+        const SnackBar(content: Text('Added to the scan session')),
       );
       Navigator.of(context).pop(true);
     }

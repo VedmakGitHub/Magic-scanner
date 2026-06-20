@@ -9,6 +9,7 @@ import '../data/providers.dart';
 import '../data/scan_settings.dart';
 import '../recognition/frame_processor.dart';
 import '../recognition/matcher.dart';
+import '../scan/edit_panel.dart';
 import '../scan/feedback.dart';
 import '../scan/scan_session.dart';
 import '../scan/scan_settings_sheet.dart';
@@ -357,7 +358,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
             child: ScanResultPanel(
               itemId: _activeItemId!,
               onOpenVersions: () => _openVersionsForItem(_activeItemId!),
-              onOpenEdit: () => showSessionSheet(context),
+              onOpenEdit: () => showEditPanel(context, _activeItemId!),
               onClose: () => setState(() => _activeItemId = null),
             ),
           ),

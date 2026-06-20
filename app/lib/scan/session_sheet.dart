@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ui/widgets.dart';
+import 'edit_panel.dart';
 import 'scan_session.dart';
 
 Future<void> showSessionSheet(BuildContext context) {
@@ -94,6 +95,7 @@ class _SessionSheet extends ConsumerWidget {
     final p = it.printing;
     final price = p.priceForFinish(it.finish);
     return ListTile(
+      onTap: () => showEditPanel(context, it.id),
       leading: SizedBox(width: 40, height: 56, child: CardImage(printing: p, thumbnail: true)),
       title: Text('${it.qty}x ${p.name}',
           maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -103,7 +105,8 @@ class _SessionSheet extends ConsumerWidget {
           const SizedBox(width: 4),
           Expanded(
             child: Text(
-              '${p.setName} #${p.collectorNumber} · ${p.lang.toUpperCase()} · ${it.condition.code}',
+              '${p.setName} #${p.collectorNumber} · ${p.lang.toUpperCase()} · ${it.condition.code}'
+              '${price == null ? '' : ' · ~\$${price.toStringAsFixed(2)}'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -113,8 +116,10 @@ class _SessionSheet extends ConsumerWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(price == null ? '—' : '~\$${price.toStringAsFixed(2)}',
-              style: Theme.of(context).textTheme.bodySmall),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            onPressed: () => showEditPanel(context, it.id),
+          ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             onPressed: () => ctrl.remove(it.id),
