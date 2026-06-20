@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'image_urls.dart';
 
@@ -86,7 +87,7 @@ class HashEntry {
   final String? illustrationId;
   final String scryfallId;
   final String face;
-  final int phash; // 64-bit (stored signed in SQLite)
+  final Uint8List phash; // 256-bit (32-byte BLOB)
 
   const HashEntry({
     required this.illustrationId,

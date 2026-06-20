@@ -11,3 +11,17 @@ app/.flutter-plugins*
 # Python cache
 __pycache__/
 *.pyc
+
+# Android build output / gradle cache
+app/android/build/
+app/android/.gradle/
+
+# Transient diagnostics from on-device testing (kept locally, not versioned)
+/spike_data/
+/spike_run*/
+/spike_logs.txt
+/spike_still_*.jpg
+/debug_*.jpg
+/gh
+dataprep/_*.py
+dataprep/ground_truth.json

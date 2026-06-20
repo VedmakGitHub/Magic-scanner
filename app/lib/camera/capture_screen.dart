@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/providers.dart';
 import '../recognition/recognition_service.dart';
 import '../scan/candidate_sheet.dart';
+import '../scan/manual_search.dart';
 import 'guide_overlay.dart';
 
 /// Scan screen: live preview + card guide overlay + capture (Section 6, 8.2).
@@ -137,6 +138,17 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen>
           right: 0,
           top: 48,
           child: _hint(),
+        ),
+        Positioned(
+          right: 8,
+          top: 40,
+          child: SafeArea(
+            child: IconButton.filledTonal(
+              icon: const Icon(Icons.search),
+              tooltip: 'Find a card by name',
+              onPressed: () => showManualSearch(context),
+            ),
+          ),
         ),
         Positioned(
           left: 0,

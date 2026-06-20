@@ -34,7 +34,7 @@ def test_hash_is_deterministic():
     h1 = phash.phash_from_rgb(rgb)
     h2 = phash.phash_from_rgb(rgb)
     assert h1 == h2
-    assert 0 <= h1 < (1 << 64)
+    assert 0 <= h1 < (1 << 256)
 
 
 def test_hash_is_64_bit_and_distinguishes():

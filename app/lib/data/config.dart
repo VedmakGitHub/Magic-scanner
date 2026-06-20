@@ -22,8 +22,11 @@ class AppConfig {
   static const collectionDbFileName = 'collection.sqlite';
   static const bundleVersionKey = 'bundle_version';
 
-  /// Matching thresholds (Section 5.2) — tune during acceptance testing.
-  static const int strongMatchMaxDistance = 10;
-  static const int weakMatchMinDistance = 18;
+  /// Matching thresholds for the 256-bit hash (Section 5.2) — tune during
+  /// acceptance testing. Real-photo true matches were ~84 vs ~90 nearest-random
+  /// in offline tests, so these are deliberately generous.
+  static const int strongMatchMaxDistance = 72;
+  static const int weakMatchMinDistance = 110;
+  static const int ambiguousGap = 6; // top-two within this => ambiguous
   static const int topK = 5;
 }

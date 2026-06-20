@@ -41,8 +41,14 @@ from typing import List, Sequence
 # Frozen constants
 # ---------------------------------------------------------------------------
 RESIZE_N = 32          # resize target is RESIZE_N x RESIZE_N
-DCT_KEEP = 8           # keep top-left DCT_KEEP x DCT_KEEP coefficients (64 total)
+DCT_KEEP = 16          # keep top-left DCT_KEEP x DCT_KEEP coefficients (256 total)
+HASH_BITS = DCT_KEEP * DCT_KEEP   # 256-bit hash
+HASH_BYTES = HASH_BITS // 8       # 32 bytes
 _TWO_N = 2 * RESIZE_N  # denominator in the DCT-II cosine argument
+
+# NOTE: This is a 256-bit DCT pHash. The original 64-bit (8x8) hash proved too
+# coarse for real camera photos (the correct card ranked below random matches);
+# 256 bits restores discrimination. Algorithm is otherwise unchanged.
 
 
 def _build_cos_table() -> List[List[float]]:
@@ -169,25 +175,30 @@ def dct_8x8(matrix: Sequence[Sequence[float]]) -> List[List[float]]:
 # ---------------------------------------------------------------------------
 # Steps 5-8: threshold + pack
 # ---------------------------------------------------------------------------
-def _median63(values: Sequence[float]) -> float:
+def _median(values: Sequence[float]) -> float:
     s = sorted(values)
-    return s[len(s) // 2]  # 63 values -> index 31, the middle element
+    return s[len(s) // 2]  # odd count -> the middle element
 
 
 def pack_hash(block: Sequence[Sequence[float]]) -> int:
-    """block is DCT_KEEP x DCT_KEEP -> 64-bit int (row-major, MSB first)."""
+    """block is DCT_KEEP x DCT_KEEP -> HASH_BITS-bit int (row-major, MSB first)."""
     flat: List[float] = []
     for v in range(DCT_KEEP):
         for u in range(DCT_KEEP):
             flat.append(block[v][u])
     # Median over all but the DC term (index 0).
-    median = _median63(flat[1:])
+    median = _median(flat[1:])
     bits = 0
-    for i in range(64):
+    for i in range(HASH_BITS):
         bits <<= 1
         if flat[i] > median:
             bits |= 1
     return bits
+
+
+def to_bytes(h: int) -> bytes:
+    """Big-endian HASH_BYTES blob for SQLite storage (matches Dart byte order)."""
+    return h.to_bytes(HASH_BYTES, "big")
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +226,7 @@ def phash_from_file(path: str) -> int:
 
 
 def hamming(a: int, b: int) -> int:
-    return bin((a ^ b) & 0xFFFFFFFFFFFFFFFF).count("1")
+    return bin(a ^ b).count("1")
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +264,7 @@ def _main(argv: List[str]) -> int:
         for path in argv[1:]:
             h = phash_from_file(path)
             # 16-hex-digit, zero-padded, lowercase — the parity test parses this.
-            print(f"{h:016x}\t{path}")
+            print(f"{h:064x}\t{path}")
         return 0
     sys.stderr.write(
         "usage:\n"

@@ -43,7 +43,6 @@ from build_bundle import (
     USER_AGENT,
     _cache_path,
     _open_checkpoint,
-    _to_signed64,
     collect_hash_jobs,
     load_json,
 )
@@ -149,7 +148,7 @@ def main(argv: List[str]) -> int:
             # 1. Try the existing cache file first (may be fine).
             if os.path.exists(dest) and os.path.getsize(dest) > 0:
                 try:
-                    h = _to_signed64(phash.phash_from_file(dest))
+                    h = phash.to_bytes(phash.phash_from_file(dest))
                     result, reason = "ok", "cached"
                 except Exception:  # noqa: BLE001
                     os.remove(dest)  # corrupt/truncated -> re-download below
@@ -158,7 +157,7 @@ def main(argv: List[str]) -> int:
                 got, reason = _download(url, dest, args.retries)
                 if got:
                     try:
-                        h = _to_signed64(phash.phash_from_file(dest))
+                        h = phash.to_bytes(phash.phash_from_file(dest))
                         result, reason = "ok", "redownloaded"
                     except Exception as e:  # noqa: BLE001
                         reason = f"decode_{type(e).__name__}"

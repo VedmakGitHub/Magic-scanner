@@ -41,7 +41,7 @@ void main() {
       final decoded = img.decodeImage(bytes);
       expect(decoded, isNotNull, reason: 'could not decode $name');
       final h = PerceptualHash.fromImage(decoded!);
-      final hex = PerceptualHash.toHex64(h);
+      final hex = PerceptualHash.toHex(h);
       expect(hex, equals(expected),
           reason: 'Dart pHash for $name ($hex) != Python golden ($expected). '
               'Parity is broken — recognition will silently fail (Section 5).');

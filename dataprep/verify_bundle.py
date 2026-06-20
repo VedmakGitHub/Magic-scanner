@@ -41,7 +41,6 @@ from build_bundle import (
     DEFAULT_CACHE_DIR,
     OUT_DIR,
     _cache_path,
-    _to_signed64,
     collect_hash_jobs,
     load_json,
 )
@@ -188,8 +187,10 @@ def main(argv: List[str]) -> int:
 
     # ---- 6. Degeneracy -----------------------------------------------------
     print("[6] Hash value sanity")
-    zero = conn.execute("SELECT COUNT(*) FROM hashes WHERE phash = 0").fetchone()[0]
-    allones = conn.execute("SELECT COUNT(*) FROM hashes WHERE phash = -1").fetchone()[0]
+    zero_blob = b"\x00" * phash.HASH_BYTES
+    ones_blob = b"\xff" * phash.HASH_BYTES
+    zero = conn.execute("SELECT COUNT(*) FROM hashes WHERE phash = ?", (zero_blob,)).fetchone()[0]
+    allones = conn.execute("SELECT COUNT(*) FROM hashes WHERE phash = ?", (ones_blob,)).fetchone()[0]
     distinct = conn.execute("SELECT COUNT(DISTINCT phash) FROM hashes").fetchone()[0]
     if zero == 0 and allones == 0:
         _ok("no all-zero or all-ones hashes")
@@ -227,18 +228,18 @@ def main(argv: List[str]) -> int:
             nocache += 1
             continue
         try:
-            recomputed = _to_signed64(phash.phash_from_file(dest))
+            recomputed = phash.to_bytes(phash.phash_from_file(dest))
         except Exception as e:  # noqa: BLE001
             _fail(f"re-hash raised for {scryfall_id}/{face}: {e}")
             checked += 1
             continue
         checked += 1
-        if recomputed != stored:
+        stored_bytes = bytes(stored) if stored is not None else b""
+        if recomputed != stored_bytes:
             mism += 1
             if mism <= 5:
                 print(f"      MISMATCH {scryfall_id}/{face}: "
-                      f"stored={stored & 0xFFFFFFFFFFFFFFFF:016x} "
-                      f"recomputed={recomputed & 0xFFFFFFFFFFFFFFFF:016x}")
+                      f"stored={stored_bytes.hex()} recomputed={recomputed.hex()}")
     print(f"      re-hashed={checked}  mismatches={mism}  (skipped {nocache} not cached)")
     if checked == 0:
         _warn("no cached images available to re-hash (cache cleared?)")

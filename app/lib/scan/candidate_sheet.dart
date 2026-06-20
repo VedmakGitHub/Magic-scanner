@@ -5,6 +5,7 @@ import '../data/models.dart';
 import '../recognition/matcher.dart';
 import '../recognition/recognition_service.dart';
 import '../ui/widgets.dart';
+import 'manual_search.dart';
 import 'version_picker.dart';
 
 /// Candidate confirmation sheet — top-5 thumbnails; pick or rescan (Section 6, 8.3).
@@ -80,10 +81,29 @@ class _CandidateSheet extends ConsumerWidget {
               top: false,
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: OutlinedButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('None of these — rescan'),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Rescan'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton.tonalIcon(
+                        onPressed: () async {
+                          final added = await showManualSearch(context);
+                          if (added == true && context.mounted) {
+                            Navigator.of(context).pop();
+                          }
+                        },
+                        icon: const Icon(Icons.search),
+                        label: const Text('Search by name'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),

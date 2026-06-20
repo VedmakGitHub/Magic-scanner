@@ -33,6 +33,7 @@ dependencies:
   crypto: ^3.0.5 # sha256 verification of the bundle
 
   cupertino_icons: ^1.0.8
+  opencv_core: ^1.4.5
 
 dev_dependencies:
   flutter_test:
@@ -41,3 +42,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/testlist.json

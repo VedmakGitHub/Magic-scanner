@@ -94,7 +94,7 @@ def main() -> None:
         path = os.path.join(OUT_DIR, name)
         img.save(path, "PNG")
         h = phash.phash_from_file(path)
-        golden[name] = f"{h:016x}"
+        golden[name] = f"{h:064x}"
         print(f"{golden[name]}  {name}")
     with open(os.path.join(OUT_DIR, "golden.json"), "w", encoding="utf-8") as f:
         json.dump(golden, f, indent=2, sort_keys=True)

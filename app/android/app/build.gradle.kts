@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.mtg_scanner"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36 // opencv_core's deps require compileSdk >= 34
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

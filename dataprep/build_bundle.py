@@ -312,8 +312,8 @@ def _hash_worker(job: Tuple, cache_dir: str) -> Optional[Tuple]:
         h = phash.phash_from_file(dest)
     except Exception:  # noqa: BLE001  (corrupt/partial image — skip)
         return None
-    # SQLite has no uint64; store as signed via two's-complement round-trip.
-    return (illustration_id, scryfall_id, face_label, _to_signed64(h))
+    # 256-bit hash stored as a 32-byte big-endian BLOB.
+    return (illustration_id, scryfall_id, face_label, phash.to_bytes(h))
 
 
 # Checkpoint store: hashes are written here incrementally as they complete, so a
@@ -330,7 +330,7 @@ def _open_checkpoint(path: str) -> sqlite3.Connection:
              illustration_id TEXT,
              scryfall_id     TEXT,
              face            TEXT,
-             phash           INTEGER NOT NULL,
+             phash           BLOB NOT NULL,
              PRIMARY KEY (scryfall_id, face)
            )"""
     )
@@ -555,7 +555,7 @@ CREATE TABLE hashes (
   illustration_id  TEXT,
   scryfall_id      TEXT,
   face             TEXT,
-  phash            INTEGER NOT NULL
+  phash            BLOB NOT NULL          -- 256-bit DCT pHash, 32-byte big-endian
 );
 CREATE INDEX idx_hashes_phash ON hashes(phash);
 
