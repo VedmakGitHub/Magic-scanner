@@ -129,10 +129,10 @@ enum MatchConfidence { strong, ambiguous, weak }
 MatchConfidence classify(List<HashMatch> top) {
   if (top.isEmpty) return MatchConfidence.weak;
   final best = top.first.distance;
-  if (best > AppConfig.weakMatchMinDistance) return MatchConfidence.weak;
-  if (top.length >= 2 && (top[1].distance - best) <= AppConfig.ambiguousGap) {
-    return MatchConfidence.ambiguous;
-  }
+  // With multi-scale matching rank-1 is reliable, so a low best distance is a
+  // strong match outright (no gap downgrade — that previously blocked true
+  // matches whose nearest neighbour happened to be close).
   if (best <= AppConfig.strongMatchMaxDistance) return MatchConfidence.strong;
+  if (best > AppConfig.weakMatchMinDistance) return MatchConfidence.weak;
   return MatchConfidence.ambiguous;
 }

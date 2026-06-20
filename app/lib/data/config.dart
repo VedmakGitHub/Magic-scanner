@@ -25,8 +25,11 @@ class AppConfig {
   /// Matching thresholds for the 256-bit hash (Section 5.2) — tune during
   /// acceptance testing. Real-photo true matches were ~84 vs ~90 nearest-random
   /// in offline tests, so these are deliberately generous.
-  static const int strongMatchMaxDistance = 72;
-  static const int weakMatchMinDistance = 110;
-  static const int ambiguousGap = 6; // top-two within this => ambiguous
+  // Multi-scale inset matching collapses true-match distances to ~20–64, so a
+  // confident match is simply best <= strongMatchMaxDistance (rank-1 was 15/15
+  // on the on-device benchmark; gap-based ambiguity is no longer needed).
+  static const int strongMatchMaxDistance = 70;
+  static const int weakMatchMinDistance = 100;
+  static const int ambiguousGap = 6; // retained for the candidate-sheet hint
   static const int topK = 5;
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'camera/capture_screen.dart';
+import 'camera/scan_screen.dart';
 import 'collection/collection_screen.dart';
 import 'data/bundle_loader.dart';
 import 'data/providers.dart';
@@ -114,7 +114,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   Widget build(BuildContext context) {
     // Keep the camera screen alive only while selected; rebuild others lazily.
     final body = switch (_index) {
-      0 => const CaptureScreen(),
+      0 => const ScanScreen(),
       1 => const CollectionScreen(),
       _ => const SettingsScreen(),
     };
