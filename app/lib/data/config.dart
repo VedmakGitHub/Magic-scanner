@@ -12,7 +12,7 @@ class AppConfig {
   /// This is a direct asset-download URL, so it never hits the rate-limited
   /// api.github.com.
   static const manifestUrl =
-      'https://github.com/OWNER/REPO/releases/download/data-bundle/manifest.json';
+      'https://github.com/VedmakGitHub/Magic-scanner/releases/download/data-bundle/manifest.json';
 
   /// Scryfall image CDN base (Section 4.6).
   static const scryfallImageBase = 'https://cards.scryfall.io';
