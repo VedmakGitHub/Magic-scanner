@@ -1,0 +1,13 @@
+# Data sources
+dataprep/out/
+dataprep/.venv/
+dataprep/image_cache/
+
+# Flutter
+app/build/
+app/.dart_tool/
+app/.flutter-plugins*
+
+# Python cache
+__pycache__/
+*.pyc
