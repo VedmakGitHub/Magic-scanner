@@ -87,10 +87,11 @@ def _api_get(url: str) -> requests.Response:
     return resp
 
 
-def resolve_bulk_urls() -> Dict[str, Dict[str, Any]]:
-    """Return {"unique_artwork": obj, "default_cards": obj} from /bulk-data (4.2)."""
+def resolve_bulk_urls(wanted: Optional[set] = None) -> Dict[str, Dict[str, Any]]:
+    """Return {type: bulk_object} for the wanted bulk types from /bulk-data (4.2)."""
+    if wanted is None:
+        wanted = {"unique_artwork", "default_cards"}
     data = _api_get(f"{SCRYFALL_API}/bulk-data").json()
-    wanted = {"unique_artwork", "default_cards"}
     found: Dict[str, Dict[str, Any]] = {}
     for obj in data.get("data", []):
         t = obj.get("type")
@@ -192,44 +193,66 @@ def _image_id_from_uris(image_uris: Optional[Dict[str, str]]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Step 3: printings table (4.4)
 # ---------------------------------------------------------------------------
+_PRINTINGS_INSERT = """INSERT OR REPLACE INTO printings
+   (scryfall_id, oracle_id, illustration_id, name, set_code, set_name,
+    collector_number, rarity, finishes, lang, released_at, image_id,
+    face, price_usd, price_usd_foil, artist)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+
+
+def _printing_rows_for_card(card: Dict[str, Any]) -> List[Tuple]:
+    """Row tuples for one card object (one per face). Empty if out of scope."""
+    if card.get("layout") in EXCLUDED_LAYOUTS:
+        return []  # non-card layouts aren't real printings to scan/collect
+    prices = card.get("prices") or {}
+    out: List[Tuple] = []
+    for face_label, face in iter_faces(card):
+        out.append((
+            card["id"], card.get("oracle_id"), face.get("illustration_id"),
+            card.get("name"), card.get("set"), card.get("set_name"),
+            card.get("collector_number"), card.get("rarity"),
+            json.dumps(card.get("finishes") or []), card.get("lang", "en"),
+            card.get("released_at"), face.get("image_id"), face_label,
+            _to_float(prices.get("usd")), _to_float(prices.get("usd_foil")),
+            face.get("artist"),
+        ))
+    return out
+
+
 def build_printings(conn: sqlite3.Connection, default_cards: List[Dict[str, Any]]) -> int:
+    """English-only printings from Default Cards (in-memory list)."""
     rows: List[Tuple] = []
     for card in default_cards:
         if card.get("lang") != "en":
             continue
-        # Skip non-card layouts that aren't real printings to scan/collect.
-        if card.get("layout") in EXCLUDED_LAYOUTS:
-            continue
-        prices = card.get("prices") or {}
-        for face_label, face in iter_faces(card):
-            rows.append((
-                card["id"],                                   # scryfall_id
-                card.get("oracle_id"),                        # oracle_id
-                face.get("illustration_id"),                  # illustration_id
-                card.get("name"),                             # name
-                card.get("set"),                              # set_code
-                card.get("set_name"),                         # set_name
-                card.get("collector_number"),                 # collector_number
-                card.get("rarity"),                           # rarity
-                json.dumps(card.get("finishes") or []),       # finishes (JSON)
-                card.get("lang", "en"),                       # lang
-                card.get("released_at"),                      # released_at
-                face.get("image_id"),                         # image_id
-                face_label,                                   # face
-                _to_float(prices.get("usd")),                 # price_usd
-                _to_float(prices.get("usd_foil")),            # price_usd_foil
-                face.get("artist"),                           # artist
-            ))
-    conn.executemany(
-        """INSERT OR REPLACE INTO printings
-           (scryfall_id, oracle_id, illustration_id, name, set_code, set_name,
-            collector_number, rarity, finishes, lang, released_at, image_id,
-            face, price_usd, price_usd_foil, artist)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        rows,
-    )
+        rows.extend(_printing_rows_for_card(card))
+    conn.executemany(_PRINTINGS_INSERT, rows)
     conn.commit()
     return len(rows)
+
+
+def build_printings_all_languages(conn: sqlite3.Connection, all_cards_path: str,
+                                  batch: int = 20000) -> int:
+    """All-language printings from the All Cards bulk, STREAMED with ijson so the
+    2.5 GB file never loads fully into memory. Includes every language so the app
+    can identify and resolve any card printed by Wizards (Section: any-language).
+    """
+    import ijson
+    total = 0
+    rows: List[Tuple] = []
+    with open(all_cards_path, "rb") as f:
+        for card in ijson.items(f, "item"):
+            rows.extend(_printing_rows_for_card(card))
+            if len(rows) >= batch:
+                conn.executemany(_PRINTINGS_INSERT, rows)
+                conn.commit()
+                total += len(rows)
+                rows.clear()
+    if rows:
+        conn.executemany(_PRINTINGS_INSERT, rows)
+        conn.commit()
+        total += len(rows)
+    return total
 
 
 def _to_float(v: Any) -> Optional[float]:
@@ -442,6 +465,56 @@ def build_hashes(
     return len(kept)
 
 
+def backfill_missing_artworks(conn: sqlite3.Connection, cache_dir: str,
+                              concurrency: int, checkpoint_path: str) -> int:
+    """Hash any artwork that has a printing but no hash yet.
+
+    Unique Artwork (the primary hash source) omits a few illustrations — some
+    Secret Lair / Planechase / special-product cards and a few non-English-only
+    printings. This pass guarantees 100% artwork coverage: for every
+    illustration_id present in `printings` but missing from `hashes`, it hashes a
+    representative printing (preferring English) and inserts into both the
+    checkpoint and the bundle. Idempotent and cheap (typically a few dozen).
+    """
+    # One representative printing per missing illustration, English preferred.
+    rows = conn.execute(
+        """SELECT illustration_id, scryfall_id, face, image_id, lang FROM printings
+           WHERE illustration_id IS NOT NULL AND image_id IS NOT NULL
+             AND illustration_id NOT IN (SELECT illustration_id FROM hashes)"""
+    ).fetchall()
+    reps: dict = {}
+    for ill, sid, face, image_id, lang in rows:
+        cur = reps.get(ill)
+        if cur is None or (lang == "en" and cur[4] != "en"):
+            reps[ill] = (ill, sid, face, image_id, lang)
+    if not reps:
+        return 0
+    jobs = [(ill, sid, face, image_id, cdn_url(image_id, "normal", face))
+            for (ill, sid, face, image_id, _lang) in reps.values()]
+    print(f"      backfilling {len(jobs):,} artworks missing from Unique Artwork")
+
+    os.makedirs(cache_dir, exist_ok=True)
+    worker = partial(_hash_worker, cache_dir=cache_dir)
+    new_rows: List[Tuple] = []
+    with ProcessPoolExecutor(max_workers=concurrency) as ex:
+        for res in tqdm(ex.map(worker, jobs, chunksize=4), total=len(jobs),
+                        desc="  backfill"):
+            if res is not None:
+                new_rows.append(res)
+    if new_rows:
+        cp = _open_checkpoint(checkpoint_path)
+        cp.executemany(
+            "INSERT OR REPLACE INTO hashes "
+            "(illustration_id, scryfall_id, face, phash) VALUES (?,?,?,?)", new_rows)
+        cp.commit()
+        cp.close()
+        conn.executemany(
+            "INSERT INTO hashes (illustration_id, scryfall_id, face, phash) VALUES (?,?,?,?)",
+            new_rows)
+        conn.commit()
+    return len(new_rows)
+
+
 def _to_signed64(u: int) -> int:
     """Map a 64-bit unsigned int into the signed range SQLite INTEGER stores."""
     u &= 0xFFFFFFFFFFFFFFFF
@@ -600,6 +673,11 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--no-resume", action="store_true",
                     help="Start hashing from scratch, clearing the checkpoint "
                          "(default: resume from out/hashes_checkpoint.sqlite).")
+    ap.add_argument("--languages", choices=["en", "all"], default="en",
+                    help="Printings to include: 'en' (Default Cards, English only) "
+                         "or 'all' (All Cards, every language printed by Wizards). "
+                         "'all' is metadata-only and reuses the existing hash "
+                         "checkpoint — no images are re-hashed.")
     args = ap.parse_args(argv[1:])
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -608,23 +686,29 @@ def main(argv: List[str]) -> int:
     manifest_path = os.path.join(OUT_DIR, "manifest.json")
     checkpoint_path = os.path.join(OUT_DIR, "hashes_checkpoint.sqlite")
 
+    all_langs = args.languages == "all"
+    printings_type = "all_cards" if all_langs else "default_cards"
+
     print("[1/6] Resolving Scryfall bulk URLs ...")
-    bulk = resolve_bulk_urls()
-    scryfall_updated_at = bulk["default_cards"].get("updated_at", "")
+    bulk = resolve_bulk_urls({"unique_artwork", printings_type})
+    scryfall_updated_at = bulk[printings_type].get("updated_at", "")
 
     ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
-    dc_path = os.path.join(OUT_DIR, "default_cards.json")
+    printings_path = os.path.join(OUT_DIR, f"{printings_type}.json")
 
     print("[2/6] Downloading bulk files ...")
-    if not (args.keep_bulk and os.path.exists(dc_path)):
-        download_bulk(bulk["default_cards"], dc_path)
+    if not (args.keep_bulk and os.path.exists(printings_path)):
+        download_bulk(bulk[printings_type], printings_path)
     if not (args.keep_bulk and os.path.exists(ua_path)):
         download_bulk(bulk["unique_artwork"], ua_path)
 
-    print("[3/6] Building printings table ...")
-    default_cards = load_json(dc_path)
+    print(f"[3/6] Building printings table ({args.languages}) ...")
     conn = create_db(sqlite_path)
-    card_count = build_printings(conn, default_cards)
+    if all_langs:
+        # Streamed (ijson) so the 2.5 GB All Cards file never fully loads.
+        card_count = build_printings_all_languages(conn, printings_path)
+    else:
+        card_count = build_printings(conn, load_json(printings_path))
     print(f"      printings rows: {card_count:,}")
 
     print("[4/6] Building hashes table ...")
@@ -637,9 +721,15 @@ def main(argv: List[str]) -> int:
             conn, unique_artwork, args.cache_dir, args.concurrency, args.limit,
             checkpoint_path, resume=not args.no_resume,
         )
+        # Hash any artwork that has a printing but no hash (gaps in Unique Artwork).
+        if args.limit is None:
+            hash_count += backfill_missing_artworks(
+                conn, args.cache_dir, args.concurrency, checkpoint_path)
     print(f"      hashes rows: {hash_count:,}")
 
     bundle_version = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+    if all_langs:
+        bundle_version += "-all"  # distinct version so clients re-download
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('bundle_version', ?)", (bundle_version,))
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('scryfall_updated_at', ?)",
                  (scryfall_updated_at,))
@@ -670,7 +760,7 @@ def main(argv: List[str]) -> int:
     )
 
     if not args.keep_bulk:
-        for p in (ua_path, dc_path):
+        for p in (ua_path, printings_path):
             if os.path.exists(p):
                 os.remove(p)
 

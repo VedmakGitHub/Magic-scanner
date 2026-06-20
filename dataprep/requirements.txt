@@ -6,3 +6,4 @@
 requests>=2.31
 Pillow>=10.3
 tqdm>=4.66
+ijson>=3.2   # streaming parser for the 2.5 GB All Cards bulk (--languages all)
