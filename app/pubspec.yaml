@@ -27,6 +27,10 @@ dependencies:
   # HTTP download + lazy image display/cache (Section 2).
   dio: ^5.7.0
   cached_network_image: ^3.4.1
+  flutter_svg: ^2.0.10+1 # Scryfall set-symbol SVGs (rarity-tinted)
+
+  # Persisted scan settings (quick mode, lock set, etc.).
+  shared_preferences: ^2.3.2
 
   # Bundle handling.
   archive: ^3.6.1 # gzip unpack of the data bundle

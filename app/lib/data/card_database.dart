@@ -96,6 +96,42 @@ class CardDatabase {
     return out;
   }
 
+  /// Every printing of a CARD (across all artworks, sets and languages) — drives
+  /// the version row/grid. Queries by `name` (indexed) and returns front faces
+  /// newest-first; optionally narrows to a single `oracleId` to disambiguate the
+  /// rare same-name/different-card case. Group with [groupCardVersions].
+  Future<List<Printing>> printingsForCard(String name, {String? oracleId}) async {
+    final rows = await _db.query(
+      'printings',
+      where: "name = ? AND face = 'front'",
+      whereArgs: [name],
+      orderBy: 'released_at IS NULL, released_at DESC',
+    );
+    var list = rows.map(Printing.fromRow).toList();
+    if (oracleId != null) {
+      final narrowed = list.where((p) => p.oracleId == oracleId).toList();
+      if (narrowed.isNotEmpty) list = narrowed;
+    }
+    return list;
+  }
+
+  /// Distinct sets matching a query — for the "Lock set" autocomplete (Section 8).
+  Future<List<({String code, String name})>> setSearch(String query,
+      {int limit = 30}) async {
+    final q = '%${query.trim()}%';
+    final rows = await _db.rawQuery(
+      '''SELECT set_code, set_name FROM printings
+         WHERE set_name LIKE ? OR set_code LIKE ?
+         GROUP BY set_code
+         ORDER BY set_name COLLATE NOCASE
+         LIMIT ?''',
+      [q, q, limit],
+    );
+    return rows
+        .map((r) => (code: r['set_code'] as String, name: r['set_name'] as String))
+        .toList();
+  }
+
   /// Free-text search by name or set (Section 8, collection search). Returns one
   /// representative front-face printing per scryfall_id, name-ordered.
   Future<List<Printing>> search(String query, {int limit = 100}) async {

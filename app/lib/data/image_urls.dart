@@ -23,3 +23,11 @@ String scryfallImageUrl(
   return '${AppConfig.scryfallImageBase}/$size/$f/'
       '${imageId[0]}/${imageId[1]}/$imageId.jpg';
 }
+
+/// Scryfall per-set icon SVG (monochrome; we tint it by rarity at display time).
+///
+///   https://svgs.scryfall.io/sets/<code>.svg
+const String _scryfallSvgBase = 'https://svgs.scryfall.io';
+
+String scryfallSetIconUrl(String setCode) =>
+    '$_scryfallSvgBase/sets/${setCode.toLowerCase()}.svg';

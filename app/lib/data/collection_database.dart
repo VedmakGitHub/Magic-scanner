@@ -9,34 +9,61 @@ class CollectionDatabase {
   static Future<CollectionDatabase> open(String path) async {
     final db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, _) async {
-        await db.execute('''
-          CREATE TABLE collection_items (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            scryfall_id  TEXT NOT NULL,
-            finish       TEXT NOT NULL,
-            quantity     INTEGER NOT NULL DEFAULT 1,
-            added_at     TEXT NOT NULL,
-            UNIQUE(scryfall_id, finish)
-          )
-        ''');
+        await db.execute(_createV2);
+      },
+      onUpgrade: (db, oldV, newV) async {
+        // v2 adds `condition` and widens the unique key to include it. SQLite
+        // can't drop a table-level UNIQUE, so rebuild the table and copy rows.
+        if (oldV < 2) {
+          await db.execute(
+              'ALTER TABLE collection_items RENAME TO collection_items_v1');
+          await db.execute(_createV2);
+          await db.execute('''
+            INSERT INTO collection_items
+              (id, scryfall_id, finish, condition, quantity, added_at)
+            SELECT id, scryfall_id, finish, 'NM', quantity, added_at
+            FROM collection_items_v1
+          ''');
+          await db.execute('DROP TABLE collection_items_v1');
+        }
       },
     );
     return CollectionDatabase._(db);
   }
 
+  static const _createV2 = '''
+    CREATE TABLE collection_items (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      scryfall_id  TEXT NOT NULL,
+      finish       TEXT NOT NULL,
+      condition    TEXT NOT NULL DEFAULT 'NM',
+      quantity     INTEGER NOT NULL DEFAULT 1,
+      added_at     TEXT NOT NULL,
+      UNIQUE(scryfall_id, finish, condition)
+    )
+  ''';
+
   Future<void> close() => _db.close();
 
   /// Add one of (scryfall_id, finish), incrementing if it already exists
   /// (Section 6, step 8).
-  Future<void> add(String scryfallId, String finish, {int qty = 1}) async {
+  Future<void> add(String scryfallId, String finish,
+      {String condition = 'NM', int qty = 1}) async {
     await _db.rawInsert(
-      '''INSERT INTO collection_items (scryfall_id, finish, quantity, added_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(scryfall_id, finish)
+      '''INSERT INTO collection_items
+           (scryfall_id, finish, condition, quantity, added_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(scryfall_id, finish, condition)
          DO UPDATE SET quantity = quantity + excluded.quantity''',
-      [scryfallId, finish, qty, DateTime.now().toUtc().toIso8601String()],
+      [
+        scryfallId,
+        finish,
+        condition,
+        qty,
+        DateTime.now().toUtc().toIso8601String()
+      ],
     );
   }
 

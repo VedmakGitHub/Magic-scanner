@@ -1,6 +1,8 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
+import '../data/image_urls.dart';
 import '../data/models.dart';
 
 /// Card image with lazy load + disk cache (Section 4.6). When offline and the
@@ -112,15 +114,69 @@ class PriceEstimateText extends StatelessWidget {
   }
 }
 
+/// Set-symbol color encodes rarity (Common=black, Uncommon=silver, Rare=gold,
+/// Mythic=dark orange); anything else (special/bonus) falls back to grey.
 Color rarityColor(String? rarity) {
   switch (rarity) {
     case 'mythic':
-      return const Color(0xFFD3582B);
+      return const Color(0xFFD3582B); // dark orange
     case 'rare':
-      return const Color(0xFFC9B037);
+      return const Color(0xFFC9B037); // gold
     case 'uncommon':
-      return const Color(0xFFA7B5BD);
+      return const Color(0xFFC0C0C0); // silver
+    case 'common':
+      return const Color(0xFF000000); // black
     default:
       return const Color(0xFF9E9E9E);
   }
+}
+
+/// A set's Scryfall icon, tinted to reflect the printing's rarity, used in every
+/// scan/collection menu. A soft halo keeps the black (common) glyph visible on
+/// the dark theme; falls back to a rarity-colored dot while loading or on error.
+class SetSymbol extends StatelessWidget {
+  final String setCode;
+  final String? rarity;
+  final double size;
+
+  const SetSymbol({
+    super.key,
+    required this.setCode,
+    this.rarity,
+    this.size = 18,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = rarityColor(rarity);
+    final url = scryfallSetIconUrl(setCode);
+    Widget layer(Color c, double s) => SvgPicture.network(
+          url,
+          width: s,
+          height: s,
+          colorFilter: ColorFilter.mode(c, BlendMode.srcIn),
+          placeholderBuilder: (_) => _dot(color, size * 0.6),
+        );
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          layer(Colors.white.withValues(alpha: 0.45), size), // halo / outline
+          layer(color, size * 0.84), // rarity-colored glyph
+        ],
+      ),
+    );
+  }
+
+  Widget _dot(Color color, double d) => Container(
+        width: d,
+        height: d,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white24, width: 0.5),
+        ),
+      );
 }

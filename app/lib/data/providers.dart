@@ -98,6 +98,7 @@ class CollectionController
           id: r['id'] as int,
           scryfallId: sid,
           finish: r['finish'] as String,
+          condition: Condition.fromCode(r['condition'] as String?),
           quantity: r['quantity'] as int,
           addedAt: r['added_at'] as String,
           printing: printings[sid],
@@ -109,9 +110,10 @@ class CollectionController
     }
   }
 
-  Future<void> add(String scryfallId, String finish, {int qty = 1}) async {
+  Future<void> add(String scryfallId, String finish,
+      {String condition = 'NM', int qty = 1}) async {
     final col = await ref.read(collectionDatabaseProvider.future);
-    await col.add(scryfallId, finish, qty: qty);
+    await col.add(scryfallId, finish, condition: condition, qty: qty);
     await load();
   }
 
