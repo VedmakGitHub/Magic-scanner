@@ -37,7 +37,7 @@ change proposal (format at the bottom) and getting sign-off.
 | 5 | **Nearest-neighbour match** | Hamming top-K over the reference hashes (min distance across insets). | `matcher.dart` `topKMulti` |
 | 6 | **Confidence** | best distance + margin to #2 → confident / near-tie / weak. | `scan_screen.dart` `_handleMatch` |
 | 7 | **OCR disambiguation** | Near-tie only: read the printed name, pick the matching candidate. | `ocr.dart` `CardOcr` |
-| 8 | **Confirmation (consensus)** | N consecutive frames must agree on the chosen card before committing. | `scan_screen.dart` `_pendingMatchKey/_pendingMatchCount` |
+| 8 | **Confirmation (consensus)** | Adaptive: a clearly confident match (margin to #2 ≥ 12) commits on the **first** stable frame; marginal/near-tie matches need **2** agreeing frames. | `scan_screen.dart` `_pendingMatchKey/_pendingMatchCount` |
 | 9 | **Dedup / lifecycle** | Don't re-add the same physical card until it leaves the frame; re-arm after N no-detect frames. (Distinct from consensus.) | `scan_screen.dart` `_lastAddedKey`, `_noDetectStreak` |
 | 10 | **Resolve + apply settings** | Matched illustration → **its own printing** (the scanned set/art) as the default; Lock-set overrides the set, Prefer-foil the finish → final card + finish. | `scan_screen.dart` `_resolveQuickPrinting`, `_quickFinish` |
 | 11 | **Outcome routing** | Quick ON → auto-add + feedback + result panel; Quick OFF → version row (**same-artwork versions first, newest→oldest, then other artworks; matched highlighted**); no confident match → keep scanning. | `scan_screen.dart` `_handleMatch`, `_matchedFirst` |
@@ -56,7 +56,7 @@ change proposal (format at the bottom) and getting sign-off.
 | Inset set | `{0, .02, .03, .04, .05, .06}` (6), min-distance | `phash.dart` `kInsets`, `matcher.dart` `topKMulti` |
 | Max match distance (weak above) | 70 | `scan_screen.dart` `_maxMatchDist` |
 | Near-tie margin (→ OCR) | 4 | `scan_screen.dart` `_tieMargin` |
-| Consensus frames | 3 | `scan_screen.dart` `_consensus` |
+| Consensus frames | adaptive: **1 if margin ≥ 12** (`_confidentSkipMargin`), else **2** (`_consensus`) | `scan_screen.dart` |
 | Re-arm no-detect frames | 3 | `scan_screen.dart` `_reArmNoDetect` |
 | Throttle / stable / cooldown | 90 ms / 3 frames / 1200 ms | `scan_screen.dart` `_throttleMs`/`_stableNeeded`/`_cooldownMs` |
 | OCR | ML Kit Latin, near-tie only, name substring/token match | `ocr.dart`, `scan_screen.dart` |
@@ -80,6 +80,7 @@ high res + full-res capture detection + the 6-inset set above.
 - **Resource profiling (future phase)** — measure CPU / memory / battery impact during continuous scanning to understand device-lifetime/performance cost. Not this phase.
 - **Exclude online-only sets** — we scan physical cards, so MTGO/Arena (and other digital-only) printings can never be present. Filter them out in `dataprep/build_bundle.py` (and/or queries) so they don't appear as candidates/versions. Backlog.
 - **Common set symbol legibility** — a Common (black) symbol is indistinguishable from a black spot on the dark theme (and the fallback dot is a black circle). Investigate a fix (outline/ring, lighter rendering, or shape cue). Backlog.
+- **Hash compute cost (~500 ms)** — the 6-inset pHash is the dominant per-attempt cost; profile/AOT does NOT improve it (allocation/memory-bound in the `image` package), and it's parity-locked to the Python reference pipeline. A real fix needs an allocation-light/native resize that stays bit-identical, or a re-hash of the bundle. Backlog. (Measured: AOT cut `match` 260→55 ms but left `hash` ~500 ms.)
 
 ---
 

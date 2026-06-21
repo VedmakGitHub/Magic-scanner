@@ -70,7 +70,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   static const _throttleMs = 90;
   static const _stableNeeded = 3;
   static const _cooldownMs = 1200;
-  static const _consensus = 3; // agreeing recognitions required before adding
+  static const _consensus = 2; // agreeing frames for a marginal match
+  static const _confidentSkipMargin = 12; // margin >= this -> commit on 1 frame
   static const _reArmNoDetect = 3; // no-card frames before the same card re-arms
   static const _maxMatchDist = 70; // best above this -> treat as no card
   static const _tieMargin = 4; // top-1 within this of top-2 -> OCR tiebreak only
@@ -273,16 +274,21 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       final pr = await resolve(m.index);
       debugPrint('scan pick=${pr?.name ?? "?"} dist=${m.distance} '
           'margin=${second - best} tie=$nearTie detect=${res.detectMs}ms '
-          'match=${matchMs}ms ocr=${ocrMs}ms pend=$_pendingMatchCount');
+          'match=${matchMs}ms ocr=${ocrMs}ms pend=$_pendingMatchCount '
+          'breakdown=${res.timings}');
     }
 
-    // Require consecutive frames to agree on the chosen card before committing.
-    if (key != _pendingMatchKey) {
+    // Adaptive consensus: a clearly confident match (large margin to #2) commits
+    // on the first stable frame; marginal/near-tie matches need _consensus
+    // agreeing frames to reject transient mis-identifications.
+    final needed = (second - best) >= _confidentSkipMargin ? 1 : _consensus;
+    if (key == _pendingMatchKey) {
+      _pendingMatchCount++;
+    } else {
       _pendingMatchKey = key;
       _pendingMatchCount = 1;
-      return;
     }
-    if (++_pendingMatchCount < _consensus) return;
+    if (_pendingMatchCount < needed) return;
     if (key == _lastAddedKey) return; // still in view -> don't duplicate
 
     final rep = await resolve(m.index);

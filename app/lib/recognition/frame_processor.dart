@@ -16,8 +16,9 @@ class FrameResult {
   final List<Uint8List>? hashes; // multi-scale 256-bit hashes (null if no card)
   final Uint8List? warpJpeg; // optional encoded warp for debug/saving
   final int detectMs;
+  final Map<String, int> timings; // sub-step ms (full path): convert/quad/warp/hash/jpeg
   const FrameResult(this.found, this.quad, this.imageW, this.imageH, this.hashes,
-      this.warpJpeg, this.detectMs);
+      this.warpJpeg, this.detectMs, [this.timings = const {}]);
 }
 
 /// Long-lived isolate that runs OpenCV detection + warp + pHash so the camera
@@ -80,15 +81,28 @@ class FrameProcessor {
         }
         List<Uint8List>? hashes;
         Uint8List? warpJpeg;
+        var timings = const <String, int>{};
         if (msg.full && det.warp != null) {
+          final swh = Stopwatch()..start();
           hashes = PerceptualHash.multiScale(det.warp!);
+          final hashMs = swh.elapsedMilliseconds;
+          swh.reset();
+          swh.start();
           warpJpeg = Uint8List.fromList(img.encodeJpg(det.warp!, quality: 88));
+          final jpegMs = swh.elapsedMilliseconds;
+          timings = {
+            'convert': lastFrameTimings['convert'] ?? -1,
+            'quad': lastFrameTimings['quad'] ?? -1,
+            'warp': lastFrameTimings['warp'] ?? -1,
+            'hash': hashMs,
+            'jpeg': jpegMs,
+          };
         }
         final quad = <double>[
           for (final p in det.quad) ...[p.dx, p.dy]
         ];
-        main.send(FrameResult(
-            true, quad, det.imageW, det.imageH, hashes, warpJpeg, sw.elapsedMilliseconds));
+        main.send(FrameResult(true, quad, det.imageW, det.imageH, hashes,
+            warpJpeg, sw.elapsedMilliseconds, timings));
       }
     });
   }

@@ -25,6 +25,10 @@ class CardDetection {
 /// needs that — see the multi-scale matching in phash.dart).
 const int _fastDetectEdge = 480;
 
+/// Per-frame sub-step timings (ms) for the full detect path, filled in the
+/// processing isolate for diagnostics. Isolate-local (not shared with main).
+final Map<String, int> lastFrameTimings = {};
+
 /// JPEG path (used by the still capture): detect + warp from encoded bytes.
 img.Image? detectAndWarpCard(Uint8List jpegBytes) {
   cv.Mat? src;
@@ -46,6 +50,7 @@ CardDetection? detectFromNv21(Uint8List nv21, int width, int height, int rotatio
     {bool warp = true}) {
   cv.Mat? yuv, bgr, rotated;
   try {
+    final sw = Stopwatch()..start();
     yuv = cv.Mat.fromList(height * 3 ~/ 2, width, cv.MatType.CV_8UC1, nv21);
     bgr = cv.cvtColor(yuv, cv.COLOR_YUV2BGR_NV21);
     rotated = switch (rotation) {
@@ -54,6 +59,7 @@ CardDetection? detectFromNv21(Uint8List nv21, int width, int height, int rotatio
       270 => cv.rotate(bgr, cv.ROTATE_90_COUNTERCLOCKWISE),
       _ => bgr.clone(),
     };
+    if (warp) lastFrameTimings['convert'] = sw.elapsedMilliseconds;
     return warp ? _detectAndWarp(rotated) : _detectQuadOnly(rotated);
   } catch (_) {
     return null;
@@ -101,8 +107,16 @@ List<cv.Point>? _findQuad(cv.Mat m) {
 }
 
 /// Full-res detect + warp to canonical size (precise corners for hashing).
-CardDetection? _detectAndWarp(cv.Mat src) =>
-    _warpResult(src, _findQuad(src));
+CardDetection? _detectAndWarp(cv.Mat src) {
+  final sw = Stopwatch()..start();
+  final quad = _findQuad(src);
+  lastFrameTimings['quad'] = sw.elapsedMilliseconds;
+  sw.reset();
+  sw.start();
+  final res = _warpResult(src, quad);
+  lastFrameTimings['warp'] = sw.elapsedMilliseconds;
+  return res;
+}
 
 CardDetection? _warpResult(cv.Mat src, List<cv.Point>? quad) {
   if (quad == null) return null;
