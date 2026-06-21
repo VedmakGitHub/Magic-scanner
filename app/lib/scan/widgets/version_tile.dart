@@ -5,10 +5,12 @@ import '../../ui/widgets.dart';
 
 /// One pickable card version (a unique set/collector# artwork): full card image
 /// with a rarity-colored set symbol and "Set Name (CODE) #num" beneath. Shared
-/// by the scan-time horizontal row and the edit-panel grid.
+/// by the scan-time horizontal row and the edit-panel grid. The image uses
+/// [Expanded] so the tile fills its cell exactly (no overflow) and shows the
+/// whole card (BoxFit.contain — never cropped).
 class VersionTile extends StatelessWidget {
   final CardVersion version;
-  final double width;
+  final double? width; // null = fill the parent cell (grid); set for the row
   final bool selected;
   final VoidCallback onTap;
 
@@ -16,7 +18,7 @@ class VersionTile extends StatelessWidget {
     super.key,
     required this.version,
     required this.onTap,
-    this.width = 116,
+    this.width,
     this.selected = false,
   });
 
@@ -37,23 +39,21 @@ class VersionTile extends StatelessWidget {
           ),
         ),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           children: [
-            AspectRatio(
-              aspectRatio: 488 / 680,
-              child: CardImage(printing: p, thumbnail: false),
+            Expanded(
+              child: CardImage(printing: p, thumbnail: false, fit: BoxFit.contain),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SetSymbol(setCode: p.setCode, rarity: p.rarity, size: 14),
+                SetSymbol(setCode: p.setCode, rarity: p.rarity, size: 13),
                 const SizedBox(width: 4),
                 Flexible(
                   child: Text(
                     p.setName,
-                    maxLines: 2,
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.labelSmall,

@@ -51,11 +51,6 @@ class _ScanSettingsSheet extends ConsumerWidget {
             onTap: () => _pickLockSet(context, ref),
           ),
           CheckboxListTile(
-            value: s.ignorePromos,
-            onChanged: (v) => c.setIgnorePromos(v ?? false),
-            title: const Text('Ignore promos'),
-          ),
-          CheckboxListTile(
             value: s.preferFoil,
             onChanged: (v) => c.setPreferFoil(v ?? false),
             title: const Text('Prefer foil if possible'),
@@ -65,11 +60,8 @@ class _ScanSettingsSheet extends ConsumerWidget {
             onChanged: (v) => c.setPlaySounds(v ?? false),
             title: const Text('Play sounds'),
           ),
-          CheckboxListTile(
-            value: s.displayTotalValue,
-            onChanged: (v) => c.setDisplayTotalValue(v ?? false),
-            title: const Text('Display total value'),
-          ),
+          // Deferred (plumbing kept in ScanSettings): Ignore promos, Display
+          // total value — see docs/ARCHITECTURE.md.
           TextButton.icon(
             icon: const Icon(Icons.help_outline),
             label: const Text('Scanning tips'),

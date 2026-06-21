@@ -83,6 +83,7 @@ class _VersionRowState extends State<VersionRow> {
                       separatorBuilder: (_, __) => const SizedBox(width: 8),
                       itemBuilder: (_, i) => VersionTile(
                         version: filtered[i],
+                        width: 150,
                         selected: filtered[i].representative.scryfallId ==
                             widget.selectedScryfallId,
                         onTap: () => widget.onPick(filtered[i]),

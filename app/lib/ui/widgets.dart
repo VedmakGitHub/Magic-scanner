@@ -1,7 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../data/config.dart';
 import '../data/image_urls.dart';
 import '../data/models.dart';
 
@@ -131,9 +135,54 @@ Color rarityColor(String? rarity) {
   }
 }
 
+/// Session-cached fetch of Scryfall set-icon SVG bytes. Returns null (never
+/// throws) when the set has no icon — many codes 404 with an HTML error page,
+/// which would otherwise crash flutter_svg's network loader.
+class _SetIconCache {
+  _SetIconCache._();
+
+  static final Dio _dio = Dio(BaseOptions(
+    responseType: ResponseType.bytes,
+    headers: {'User-Agent': AppConfig.userAgent},
+    validateStatus: (s) => s != null && s < 500,
+    receiveTimeout: const Duration(seconds: 12),
+  ));
+  static final Map<String, Uint8List?> _done = {};
+  static final Map<String, Future<Uint8List?>> _inflight = {};
+
+  static Future<Uint8List?> load(String setCode) {
+    final code = setCode.toLowerCase();
+    if (_done.containsKey(code)) return Future.value(_done[code]);
+    return _inflight[code] ??= _fetch(code);
+  }
+
+  static Future<Uint8List?> _fetch(String code) async {
+    Uint8List? result;
+    try {
+      final r = await _dio.get<List<int>>(scryfallSetIconUrl(code));
+      final ct = r.headers.value('content-type') ?? '';
+      final data = r.data;
+      if (r.statusCode == 200 && ct.contains('svg') && data != null) {
+        final bytes = Uint8List.fromList(data);
+        if (_looksSvg(bytes)) result = bytes;
+      }
+    } catch (_) {/* offline / 404 / bad data -> null */}
+    _done[code] = result;
+    _inflight.remove(code);
+    return result;
+  }
+
+  static bool _looksSvg(Uint8List b) {
+    final head =
+        String.fromCharCodes(b.take(64)).toLowerCase().trimLeft();
+    return head.startsWith('<svg') || head.startsWith('<?xml');
+  }
+}
+
 /// A set's Scryfall icon, tinted to reflect the printing's rarity, used in every
 /// scan/collection menu. A soft halo keeps the black (common) glyph visible on
-/// the dark theme; falls back to a rarity-colored dot while loading or on error.
+/// the dark theme; falls back to a rarity-colored dot while loading or when the
+/// set has no icon. Bytes are validated + cached so a bad fetch never throws.
 class SetSymbol extends StatelessWidget {
   final String setCode;
   final String? rarity;
@@ -149,23 +198,28 @@ class SetSymbol extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = rarityColor(rarity);
-    final url = scryfallSetIconUrl(setCode);
-    Widget layer(Color c, double s) => SvgPicture.network(
-          url,
-          width: s,
-          height: s,
-          colorFilter: ColorFilter.mode(c, BlendMode.srcIn),
-          placeholderBuilder: (_) => _dot(color, size * 0.6),
-        );
     return SizedBox(
       width: size,
       height: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          layer(Colors.white.withValues(alpha: 0.45), size), // halo / outline
-          layer(color, size * 0.84), // rarity-colored glyph
-        ],
+      child: FutureBuilder<Uint8List?>(
+        future: _SetIconCache.load(setCode),
+        builder: (context, snap) {
+          final bytes = snap.data;
+          if (bytes == null) return Center(child: _dot(color, size * 0.62));
+          Widget layer(Color c, double s) => SvgPicture.memory(
+                bytes,
+                width: s,
+                height: s,
+                colorFilter: ColorFilter.mode(c, BlendMode.srcIn),
+              );
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              layer(Colors.white.withValues(alpha: 0.45), size), // halo
+              layer(color, size * 0.84), // rarity-colored glyph
+            ],
+          );
+        },
       ),
     );
   }

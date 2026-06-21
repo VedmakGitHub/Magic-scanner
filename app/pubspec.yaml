@@ -32,6 +32,9 @@ dependencies:
   # Persisted scan settings (quick mode, lock set, etc.).
   shared_preferences: ^2.3.2
 
+  # On-device OCR tiebreaker — disambiguates visually-similar cards by name.
+  google_mlkit_text_recognition: ^0.13.1
+
   # Bundle handling.
   archive: ^3.6.1 # gzip unpack of the data bundle
   crypto: ^3.0.5 # sha256 verification of the bundle

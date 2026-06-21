@@ -44,10 +44,11 @@ class FrameProcessor {
     await _ready.future;
   }
 
-  /// Process one NV21 frame. [encodeWarp] true also returns a JPEG of the warp
-  /// (for debug image saving). Only one in flight at a time.
+  /// Process one NV21 frame. [full] false = fast downscaled detect, quad only
+  /// (smooth live overlay); [full] true = full-res detect + warp + multi-scale
+  /// hash + warp JPEG (for matching/OCR). Only one in flight at a time.
   Future<FrameResult> process(Uint8List nv21, int w, int h, int rotation,
-      {bool encodeWarp = false}) {
+      {bool full = false}) {
     final c = Completer<FrameResult>();
     _pending = c;
     _sendPort.send(_FrameJob(
@@ -55,7 +56,7 @@ class FrameProcessor {
       w,
       h,
       rotation,
-      encodeWarp,
+      full,
     ));
     return c.future;
   }
@@ -72,14 +73,17 @@ class FrameProcessor {
       if (msg is _FrameJob) {
         final sw = Stopwatch()..start();
         final nv21 = msg.data.materialize().asUint8List();
-        final det = detectFromNv21(nv21, msg.w, msg.h, msg.rotation);
+        final det = detectFromNv21(nv21, msg.w, msg.h, msg.rotation, warp: msg.full);
         if (det == null) {
           main.send(FrameResult(false, const [], 0, 0, null, null, sw.elapsedMilliseconds));
           return;
         }
-        final hashes = PerceptualHash.multiScale(det.warp);
-        final warpJpeg =
-            msg.encodeWarp ? Uint8List.fromList(img.encodeJpg(det.warp, quality: 88)) : null;
+        List<Uint8List>? hashes;
+        Uint8List? warpJpeg;
+        if (msg.full && det.warp != null) {
+          hashes = PerceptualHash.multiScale(det.warp!);
+          warpJpeg = Uint8List.fromList(img.encodeJpg(det.warp!, quality: 88));
+        }
         final quad = <double>[
           for (final p in det.quad) ...[p.dx, p.dy]
         ];
@@ -93,6 +97,6 @@ class FrameProcessor {
 class _FrameJob {
   final TransferableTypedData data;
   final int w, h, rotation;
-  final bool encodeWarp;
-  const _FrameJob(this.data, this.w, this.h, this.rotation, this.encodeWarp);
+  final bool full;
+  const _FrameJob(this.data, this.w, this.h, this.rotation, this.full);
 }

@@ -8,7 +8,7 @@ import '../data/models.dart';
 import '../data/providers.dart';
 import '../data/scan_settings.dart';
 import '../recognition/frame_processor.dart';
-import '../recognition/matcher.dart';
+import '../recognition/ocr.dart';
 import '../scan/edit_panel.dart';
 import '../scan/feedback.dart';
 import '../scan/scan_session.dart';
@@ -17,6 +17,10 @@ import '../scan/session_sheet.dart';
 import '../scan/widgets/control_pill.dart';
 import '../scan/widgets/scan_result_panel.dart';
 import '../scan/widgets/version_row.dart';
+
+/// DEBUG: log the top candidate + distance per recognition attempt (and the
+/// top-3 on each add) so accuracy can be diagnosed from logcat.
+const bool kScanDebug = true;
 
 /// Continuous, no-tap scan screen (ManaBox-style). The camera streams frames to
 /// an off-isolate [FrameProcessor] (detect → warp → multi-scale hash); the
@@ -37,6 +41,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   bool _busy = false;
   bool _streaming = false;
   bool _flashOn = false;
+  bool _initing = false;
   String? _error;
 
   // Detection / overlay.
@@ -48,7 +53,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   DateTime _lastRecognized = DateTime.fromMillisecondsSinceEpoch(0);
 
   // Recognition state.
-  String? _lastAddedKey; // dedup until the card leaves the frame
+  String? _lastAddedKey; // last committed card (cleared when it leaves frame)
+  int _noDetectStreak = 0; // consecutive no-card frames (re-arms _lastAddedKey)
+  String? _pendingMatchKey; // candidate awaiting consecutive agreement
+  int _pendingMatchCount = 0;
+  final Map<String, Printing?> _printingCache = {}; // illustration/sid -> Printing?
+  int _frames = 0; // fps window
+  DateTime _fpsT0 = DateTime.now();
   bool _paused = false; // true while the version row is up (Quick OFF / editing)
   int? _activeItemId; // result panel target (Quick ON)
   List<CardVersion>? _pendingVersions; // version row contents
@@ -58,6 +69,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   static const _throttleMs = 90;
   static const _stableNeeded = 3;
   static const _cooldownMs = 1200;
+  static const _consensus = 3; // agreeing recognitions required before adding
+  static const _reArmNoDetect = 3; // no-card frames before the same card re-arms
+  static const _maxMatchDist = 70; // best above this -> treat as no card
+  static const _tieMargin = 4; // top-1 within this of top-2 -> OCR tiebreak only
 
   @override
   void initState() {
@@ -67,38 +82,48 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   }
 
   Future<void> _init() async {
+    if (_initing || _controller != null) return;
+    _initing = true;
     try {
-      _proc = FrameProcessor();
-      await _proc!.start();
+      if (_proc == null) {
+        _proc = FrameProcessor();
+        await _proc!.start();
+      }
       final cams = await availableCameras();
       if (cams.isEmpty) {
-        setState(() => _error = 'No camera available on this device.');
+        if (mounted) setState(() => _error = 'No camera available on this device.');
         return;
       }
       final back = cams.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cams.first,
       );
+      // High resolution for a sharp warp (hard retro frames need it); the
+      // detector downscales internally for speed, so this stays responsive.
       final c = CameraController(back, ResolutionPreset.high,
           enableAudio: false, imageFormatGroup: ImageFormatGroup.nv21);
       _controller = c;
       await c.initialize();
       await c.startImageStream(_onFrame);
       _streaming = true;
+      _error = null;
       if (mounted) setState(() {});
     } catch (e) {
       if (mounted) setState(() => _error = 'Camera error: $e');
+    } finally {
+      _initing = false;
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
-    if (state == AppLifecycleState.inactive) {
-      _teardownCamera();
-    } else if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed) {
       _init();
+    } else {
+      // inactive / paused / hidden / detached: release the camera so its
+      // ImageReader can't deliver a frame into a detaching engine (the
+      // "FlutterJNI is not attached" native crash).
+      _teardownCamera();
     }
   }
 
@@ -128,19 +153,25 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     if (now.difference(_lastProcessed).inMilliseconds < _throttleMs) return;
     _busy = true;
     _lastProcessed = now;
+    final rotation = _controller!.description.sensorOrientation;
+    // Copy once so the buffer stays valid across the awaits below.
+    final bytes = Uint8List.fromList(image.planes[0].bytes);
+    final w = image.width, h = image.height;
     try {
-      final res = await _proc!.process(
-        image.planes[0].bytes,
-        image.width,
-        image.height,
-        _controller!.description.sensorOrientation,
-      );
+      // Fast, downscaled detection every frame -> smooth overlay + stability.
+      final res = await _proc!.process(bytes, w, h, rotation, full: false);
+      _trackFps(res.detectMs);
       if (!res.found) {
-        _lastAddedKey = null; // card left the frame -> allow re-add
+        _pendingMatchKey = null;
+        _pendingMatchCount = 0;
         _stableCount = 0;
+        if (++_noDetectStreak >= _reArmNoDetect) {
+          _lastAddedKey = null; // card truly removed -> the same card can re-add
+        }
         if (mounted && _smoothQuad != null) setState(() => _smoothQuad = null);
         return;
       }
+      _noDetectStreak = 0;
       final quad = [
         for (var i = 0; i < 4; i++) Offset(res.quad[i * 2], res.quad[i * 2 + 1])
       ];
@@ -155,44 +186,130 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       _lastCentroid = centroid;
       if (mounted) setState(() => _smoothQuad = _smooth(_smoothQuad, quad));
 
+      // Precise full-res warp + multi-scale hash only once the card is steady.
       if (_stableCount >= _stableNeeded &&
-          now.difference(_lastRecognized).inMilliseconds > _cooldownMs &&
-          res.hashes != null) {
-        await _handleMatch(res.hashes!);
+          now.difference(_lastRecognized).inMilliseconds > _cooldownMs) {
+        final full = await _proc!.process(bytes, w, h, rotation, full: true);
+        if (full.hashes != null) await _handleMatch(full);
       }
     } finally {
       _busy = false;
     }
   }
 
-  Future<void> _handleMatch(List<Uint8List> hashes) async {
+  void _trackFps(int fastDetectMs) {
+    _frames++;
+    final dt = DateTime.now().difference(_fpsT0).inMilliseconds;
+    if (dt >= 2000) {
+      if (kScanDebug) {
+        debugPrint('scan fps=${(_frames * 1000 / dt).toStringAsFixed(1)} '
+            'fastDetect=${fastDetectMs}ms session=${ref.read(scanSessionProvider).length}');
+      }
+      _frames = 0;
+      _fpsT0 = DateTime.now();
+    }
+  }
+
+  Future<void> _handleMatch(FrameResult res) async {
+    final hashes = res.hashes;
+    if (hashes == null) return;
     final svc = ref.read(recognitionServiceProvider).valueOrNull;
     if (svc == null) return;
-    final top = svc.matcher.topKMulti(hashes);
-    if (top.isEmpty || classify(top) != MatchConfidence.strong) return;
-    final best = top.first;
-    final ill = svc.matcher.illustrationIds[best.index];
-    final sid = svc.matcher.scryfallIds[best.index];
-    final key = ill ?? sid;
-    if (key == _lastAddedKey) return; // already handled this card
+    Future<Printing?> resolve(int index) async {
+      final il = svc.matcher.illustrationIds[index];
+      final sd = svc.matcher.scryfallIds[index];
+      final ckey = il ?? sd;
+      if (_printingCache.containsKey(ckey)) return _printingCache[ckey];
+      Printing? pr =
+          il != null ? await svc.cardDb.representativeForIllustration(il) : null;
+      pr ??= await svc.cardDb.getPrinting(sd);
+      _printingCache[ckey] = pr;
+      return pr;
+    }
 
-    Printing? rep =
-        ill != null ? await svc.cardDb.representativeForIllustration(ill) : null;
-    rep ??= await svc.cardDb.getPrinting(sid);
+    final sw = Stopwatch()..start();
+    final top = svc.matcher.topKMulti(hashes);
+    final matchMs = sw.elapsedMilliseconds;
+    if (top.isEmpty) {
+      _pendingMatchKey = null;
+      _pendingMatchCount = 0;
+      return;
+    }
+    final best = top.first.distance;
+    if (best > _maxMatchDist) {
+      _pendingMatchKey = null;
+      _pendingMatchCount = 0;
+      return; // no plausible card in view
+    }
+
+    final second = top.length > 1 ? top[1].distance : 999;
+    final nearTie = (second - best) <= _tieMargin;
+
+    // Trust the multi-scale rank-1 (15/15 on the benchmark). Only when the top
+    // two are a near-tie do we OCR the card name to break it — keeps the common
+    // case fast and reserves OCR for genuine ambiguity.
+    var chosen = 0;
+    var ocrMs = 0;
+    if (nearTie && res.warpJpeg != null) {
+      final s2 = Stopwatch()..start();
+      final names = [for (final mm in top) (await resolve(mm.index))?.name ?? ''];
+      final text = await CardOcr.readText(res.warpJpeg!);
+      final picked = CardOcr.bestMatch(text, names);
+      ocrMs = s2.elapsedMilliseconds;
+      if (picked >= 0) chosen = picked;
+      if (kScanDebug) {
+        debugPrint('scan OCR(${ocrMs}ms) -> '
+            '${picked >= 0 ? names[picked] : "(no match)"} | cands=${names.take(3).join("|")}');
+      }
+    }
+
+    final m = top[chosen];
+    final ill = svc.matcher.illustrationIds[m.index];
+    final sid = svc.matcher.scryfallIds[m.index];
+    final key = ill ?? sid;
+
+    if (kScanDebug) {
+      final pr = await resolve(m.index);
+      debugPrint('scan pick=${pr?.name ?? "?"} dist=${m.distance} '
+          'margin=${second - best} tie=$nearTie detect=${res.detectMs}ms '
+          'match=${matchMs}ms ocr=${ocrMs}ms pend=$_pendingMatchCount');
+    }
+
+    // Require consecutive frames to agree on the chosen card before committing.
+    if (key != _pendingMatchKey) {
+      _pendingMatchKey = key;
+      _pendingMatchCount = 1;
+      return;
+    }
+    if (++_pendingMatchCount < _consensus) return;
+    if (key == _lastAddedKey) return; // still in view -> don't duplicate
+
+    final rep = await resolve(m.index);
     if (rep == null) return;
     final versions = groupCardVersions(
         await svc.cardDb.printingsForCard(rep.name, oracleId: rep.oracleId));
     if (versions.isEmpty) return;
 
+    if (kScanDebug) {
+      final parts = <String>[];
+      for (var i = 0; i < top.length && i < 5; i++) {
+        final pr = await resolve(top[i].index);
+        parts.add('${top[i].distance}:${pr?.name ?? "?"}');
+      }
+      debugPrint('scan ADD ${rep.name} | top5: ${parts.join("  ")}');
+    }
+
     _lastRecognized = DateTime.now();
     _lastAddedKey = key;
+    _pendingMatchKey = null;
+    _pendingMatchCount = 0;
     final s = ref.read(scanSettingsProvider);
     if (s.quickMode) {
       final v = _quickPick(versions, s);
       final item = ref.read(scanSessionProvider.notifier).add(
             v.representative,
             finish: _quickFinish(v.representative, s),
-            distance: best.distance,
+            distance: m.distance,
           );
       ScanFeedback.added(sound: s.playSounds);
       if (mounted) setState(() => _activeItemId = item.id);
@@ -202,7 +319,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
           _paused = true;
           _editingItemId = null;
           _pendingVersions = versions;
-          _pendingName = rep!.name;
+          _pendingName = rep.name;
         });
       }
     }
@@ -297,6 +414,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     }
     final c = _controller;
     if (c == null || !c.value.isInitialized) {
+      // Self-heal: if the camera was lost (memory pressure, returning from a
+      // sheet), re-initialize instead of showing a permanent spinner.
+      if (_error == null && !_initing) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => mounted ? _init() : null);
+      }
       return const Center(child: CircularProgressIndicator());
     }
     final count = ref.watch(scanSessionProvider).fold<int>(0, (s, i) => s + i.qty);

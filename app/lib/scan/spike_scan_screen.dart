@@ -159,7 +159,7 @@ class _SpikeScanScreenState extends ConsumerState<SpikeScanScreen> {
         image.width,
         image.height,
         _controller!.description.sensorOrientation,
-        encodeWarp: true,
+        full: true,
       );
       if (!res.found) {
         _smoothQuad = null;
