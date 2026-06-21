@@ -64,6 +64,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   int? _activeItemId; // result panel target (Quick ON)
   List<CardVersion>? _pendingVersions; // version row contents
   String _pendingName = '';
+  String? _pendingSelectedId; // highlight/first the matched version in the row
   int? _editingItemId; // when the version row edits an existing item
 
   static const _throttleMs = 90;
@@ -305,42 +306,74 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     _pendingMatchCount = 0;
     final s = ref.read(scanSettingsProvider);
     if (s.quickMode) {
-      final v = _quickPick(versions, s);
+      // Default to the MATCHED artwork's printing (the scanned set/version);
+      // Lock-set overrides the set, Prefer-foil sets the finish.
+      final chosen = _resolveQuickPrinting(rep, versions, s);
       final item = ref.read(scanSessionProvider.notifier).add(
-            v.representative,
-            finish: _quickFinish(v.representative, s),
+            chosen,
+            finish: _quickFinish(chosen, s),
             distance: m.distance,
           );
       ScanFeedback.added(sound: s.playSounds);
       if (mounted) setState(() => _activeItemId = item.id);
     } else {
+      final mf = _matchedFirst(versions, rep);
       if (mounted) {
         setState(() {
           _paused = true;
           _editingItemId = null;
-          _pendingVersions = versions;
+          _pendingVersions = mf.ordered;
+          _pendingSelectedId = mf.selectedId;
           _pendingName = rep.name;
         });
       }
     }
   }
 
-  CardVersion _quickPick(List<CardVersion> versions, ScanSettings s) {
+  /// The printing to auto-add in Quick mode: the matched artwork's printing by
+  /// default (so the scanned set/version wins), overridden by a Locked set.
+  Printing _resolveQuickPrinting(
+      Printing matched, List<CardVersion> versions, ScanSettings s) {
     if (s.lockedSetCode != null) {
       for (final v in versions) {
         if (v.representative.setCode.toLowerCase() ==
             s.lockedSetCode!.toLowerCase()) {
-          return v;
+          return v.representative;
         }
       }
     }
-    if (s.ignorePromos) {
-      final nonPromo = versions
-          .where((v) => !v.representative.setName.toLowerCase().contains('promo'))
-          .toList();
-      if (nonPromo.isNotEmpty) return nonPromo.first;
+    return matched;
+  }
+
+  /// Order so versions sharing the MATCHED artwork (illustration) come first,
+  /// newest-to-oldest, then versions of the same card with a different artwork.
+  /// Returns the id of the newest same-artwork version to highlight it.
+  /// (`versions` is already newest-first, so each partition keeps that order.)
+  ({List<CardVersion> ordered, String? selectedId}) _matchedFirst(
+      List<CardVersion> versions, Printing matched) {
+    final ill = matched.illustrationId;
+    if (ill == null) {
+      // No illustration id: fall back to putting the exact (set, #) first.
+      final copy = [...versions];
+      final i = copy.indexWhere((v) =>
+          v.representative.setCode == matched.setCode &&
+          v.representative.collectorNumber == matched.collectorNumber);
+      if (i < 0) return (ordered: copy, selectedId: null);
+      final sel = copy[i].representative.scryfallId;
+      if (i > 0) copy.insert(0, copy.removeAt(i));
+      return (ordered: copy, selectedId: sel);
     }
-    return versions.first; // newest (printings are ordered newest-first)
+    final same = <CardVersion>[];
+    final others = <CardVersion>[];
+    for (final v in versions) {
+      (v.representative.illustrationId == ill ? same : others).add(v);
+    }
+    return (
+      ordered: [...same, ...others],
+      selectedId: same.isNotEmpty
+          ? same.first.representative.scryfallId
+          : matched.scryfallId,
+    );
   }
 
   String _quickFinish(Printing p, ScanSettings s) {
@@ -363,6 +396,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     }
     setState(() {
       _pendingVersions = null;
+      _pendingSelectedId = null;
       _editingItemId = null;
       _paused = false;
       _lastRecognized = DateTime.now();
@@ -381,10 +415,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     final versions = groupCardVersions(await svc.cardDb
         .printingsForCard(it.printing.name, oracleId: it.printing.oracleId));
     if (versions.isEmpty || !mounted) return;
+    final mf = _matchedFirst(versions, it.printing);
     setState(() {
       _paused = true;
       _editingItemId = itemId;
-      _pendingVersions = versions;
+      _pendingVersions = mf.ordered;
+      _pendingSelectedId = mf.selectedId;
       _pendingName = it!.printing.name;
     });
   }
@@ -464,9 +500,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
             child: VersionRow(
               cardName: _pendingName,
               versions: _pendingVersions!,
+              selectedScryfallId: _pendingSelectedId,
               onPick: _onPickVersion,
               onClose: () => setState(() {
                 _pendingVersions = null;
+                _pendingSelectedId = null;
                 _editingItemId = null;
                 _paused = false;
                 _lastRecognized = DateTime.now();
