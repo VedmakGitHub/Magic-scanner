@@ -192,7 +192,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       if (_stableCount >= _stableNeeded &&
           now.difference(_lastRecognized).inMilliseconds > _cooldownMs) {
         final full = await _proc!.process(bytes, w, h, rotation, full: true);
-        if (full.hashes != null) await _handleMatch(full);
+        if (full.hashes != null) await _handleMatch(full, bytes, w, h, rotation);
       }
     } finally {
       _busy = false;
@@ -212,7 +212,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     }
   }
 
-  Future<void> _handleMatch(FrameResult res) async {
+  Future<void> _handleMatch(
+      FrameResult res, Uint8List nv21, int w, int h, int rotation) async {
     final hashes = res.hashes;
     if (hashes == null) return;
     final svc = ref.read(recognitionServiceProvider).valueOrNull;
@@ -252,17 +253,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     // case fast and reserves OCR for genuine ambiguity.
     var chosen = 0;
     var ocrMs = 0;
-    if (nearTie && res.warpJpeg != null) {
+    if (nearTie) {
+      // Lazy JPEG (Option A): encode the warp only now that a tie needs OCR.
       final s2 = Stopwatch()..start();
-      final names = [for (final mm in top) (await resolve(mm.index))?.name ?? ''];
-      final text = await CardOcr.readText(res.warpJpeg!);
-      final picked = CardOcr.bestMatch(text, names);
-      ocrMs = s2.elapsedMilliseconds;
-      if (picked >= 0) chosen = picked;
-      if (kScanDebug) {
-        debugPrint('scan OCR(${ocrMs}ms) -> '
-            '${picked >= 0 ? names[picked] : "(no match)"} | cands=${names.take(3).join("|")}');
+      final proc = _proc;
+      final jpeg = proc == null
+          ? null
+          : (await proc.process(nv21, w, h, rotation, jpegOnly: true)).warpJpeg;
+      if (jpeg != null) {
+        final names = [for (final mm in top) (await resolve(mm.index))?.name ?? ''];
+        final text = await CardOcr.readText(jpeg);
+        final picked = CardOcr.bestMatch(text, names);
+        if (picked >= 0) chosen = picked;
+        if (kScanDebug) {
+          debugPrint('scan OCR(${s2.elapsedMilliseconds}ms) -> '
+              '${picked >= 0 ? names[picked] : "(no match)"} | cands=${names.take(3).join("|")}');
+        }
       }
+      ocrMs = s2.elapsedMilliseconds;
     }
 
     final m = top[chosen];

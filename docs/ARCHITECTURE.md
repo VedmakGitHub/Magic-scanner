@@ -36,7 +36,7 @@ change proposal (format at the bottom) and getting sign-off.
 | 4 | **Hash** | Multi-scale 256-bit pHash at the inset set. | `phash.dart` `multiScale` |
 | 5 | **Nearest-neighbour match** | Hamming top-K over the reference hashes (min distance across insets). | `matcher.dart` `topKMulti` |
 | 6 | **Confidence** | best distance + margin to #2 → confident / near-tie / weak. | `scan_screen.dart` `_handleMatch` |
-| 7 | **OCR disambiguation** | Near-tie only: read the printed name, pick the matching candidate. | `ocr.dart` `CardOcr` |
+| 7 | **OCR disambiguation** | Near-tie only: encode the warp JPEG **on-demand** (lazy — not every pass), read the printed name, pick the matching candidate. | `ocr.dart` `CardOcr`, `frame_processor.dart` `process(jpegOnly:)` |
 | 8 | **Confirmation (consensus)** | Adaptive: a clearly confident match (margin to #2 ≥ 12) commits on the **first** stable frame; marginal/near-tie matches need **2** agreeing frames. | `scan_screen.dart` `_pendingMatchKey/_pendingMatchCount` |
 | 9 | **Dedup / lifecycle** | Don't re-add the same physical card until it leaves the frame; re-arm after N no-detect frames. (Distinct from consensus.) | `scan_screen.dart` `_lastAddedKey`, `_noDetectStreak` |
 | 10 | **Resolve + apply settings** | Matched illustration → **its own printing** (the scanned set/art) as the default; Lock-set overrides the set, Prefer-foil the finish → final card + finish. | `scan_screen.dart` `_resolveQuickPrinting`, `_quickFinish` |
@@ -91,3 +91,18 @@ Before changing anything in the baseline table or a pipeline step, state:
 
 Example:
 > Step 4 (Hash) · insets 6 → 4 · ~30 % faster hashing · re-run the 15-card benchmark, expect ≥14/15 top-1 · may regress retro frames (Flare).
+
+## Decision log
+Approved changes (via the rule above), newest first.
+
+### 2026-06-21 — P4 adaptive consensus
+- **Change:** consensus 3 → adaptive (1 frame if margin ≥ 12, else 2).
+- **Why / impact:** confident cards committed in 3 attempts (~2.4 s); large margins are reliable, so 1 frame is safe. Validated on-device: 6/8 cards added on the first frame, all correct; ~3× faster time-to-add.
+- **Code:** `scan_screen.dart` `_confidentSkipMargin` / `_consensus`.
+
+### 2026-06-21 — Lazy JPEG for OCR (Option A)
+- **Change:** the warp JPEG is no longer encoded on every full pass; it's encoded on-demand (`process(jpegOnly:)`) only when a near-tie triggers the OCR tiebreak.
+- **Why:** profiling showed JPEG encode ≈ 100–340 ms/attempt (avg ~180), used only on rare near-ties (`margin ≤ 4`) — pure waste on the common path; AOT didn't reduce it.
+- **Impact:** confident 1-frame add ~0.8–1 s → ~0.6–0.8 s; a tie pays one extra ~250 ms detect+warp+encode pass (rare, already slow).
+- **Alternatives rejected:** B (match-in-isolate + conditional JPEG) — `match` is only ~55 ms in AOT, not worth moving the 50k-hash matcher into the isolate; C (cheaper title-strip encode) — shrinks but doesn't eliminate the waste.
+- **Code:** `frame_processor.dart` `process(jpegOnly:)` + `_entry`; `scan_screen.dart` `_handleMatch`.

@@ -45,11 +45,14 @@ class FrameProcessor {
     await _ready.future;
   }
 
-  /// Process one NV21 frame. [full] false = fast downscaled detect, quad only
-  /// (smooth live overlay); [full] true = full-res detect + warp + multi-scale
-  /// hash + warp JPEG (for matching/OCR). Only one in flight at a time.
+  /// Process one NV21 frame. Modes (only one in flight at a time):
+  ///  - default: fast downscaled detect, quad only (smooth live overlay)
+  ///  - [full]: full-res detect + warp + multi-scale hash (for matching)
+  ///  - [jpegOnly]: full-res detect + warp + JPEG encode (for the OCR tiebreak)
+  /// The JPEG is encoded ONLY on demand (jpegOnly), not on every full pass —
+  /// see the "Lazy JPEG (Option A)" decision in docs/ARCHITECTURE.md.
   Future<FrameResult> process(Uint8List nv21, int w, int h, int rotation,
-      {bool full = false}) {
+      {bool full = false, bool jpegOnly = false}) {
     final c = Completer<FrameResult>();
     _pending = c;
     _sendPort.send(_FrameJob(
@@ -58,6 +61,7 @@ class FrameProcessor {
       h,
       rotation,
       full,
+      jpegOnly,
     ));
     return c.future;
   }
@@ -74,7 +78,9 @@ class FrameProcessor {
       if (msg is _FrameJob) {
         final sw = Stopwatch()..start();
         final nv21 = msg.data.materialize().asUint8List();
-        final det = detectFromNv21(nv21, msg.w, msg.h, msg.rotation, warp: msg.full);
+        final wantWarp = msg.full || msg.jpegOnly;
+        final det =
+            detectFromNv21(nv21, msg.w, msg.h, msg.rotation, warp: wantWarp);
         if (det == null) {
           main.send(FrameResult(false, const [], 0, 0, null, null, sw.elapsedMilliseconds));
           return;
@@ -85,18 +91,15 @@ class FrameProcessor {
         if (msg.full && det.warp != null) {
           final swh = Stopwatch()..start();
           hashes = PerceptualHash.multiScale(det.warp!);
-          final hashMs = swh.elapsedMilliseconds;
-          swh.reset();
-          swh.start();
-          warpJpeg = Uint8List.fromList(img.encodeJpg(det.warp!, quality: 88));
-          final jpegMs = swh.elapsedMilliseconds;
           timings = {
             'convert': lastFrameTimings['convert'] ?? -1,
             'quad': lastFrameTimings['quad'] ?? -1,
             'warp': lastFrameTimings['warp'] ?? -1,
-            'hash': hashMs,
-            'jpeg': jpegMs,
+            'hash': swh.elapsedMilliseconds,
           };
+        } else if (msg.jpegOnly && det.warp != null) {
+          // Lazy: only encoded when a near-tie actually needs OCR.
+          warpJpeg = Uint8List.fromList(img.encodeJpg(det.warp!, quality: 88));
         }
         final quad = <double>[
           for (final p in det.quad) ...[p.dx, p.dy]
@@ -112,5 +115,7 @@ class _FrameJob {
   final TransferableTypedData data;
   final int w, h, rotation;
   final bool full;
-  const _FrameJob(this.data, this.w, this.h, this.rotation, this.full);
+  final bool jpegOnly;
+  const _FrameJob(
+      this.data, this.w, this.h, this.rotation, this.full, this.jpegOnly);
 }
