@@ -132,6 +132,25 @@ class CardDatabase {
         .toList();
   }
 
+  /// All distinct card names in the bundle — used to build the OCR name index.
+  Future<List<String>> distinctNames() async {
+    final rows = await _db.rawQuery('SELECT DISTINCT name FROM printings');
+    return [for (final r in rows) r['name'] as String];
+  }
+
+  /// Representative front-face printing for an exact card name (indexed lookup),
+  /// newest first. Used by the OCR name-lookup tiebreak.
+  Future<Printing?> getByExactName(String name) async {
+    final rows = await _db.query(
+      'printings',
+      where: "name = ? AND face = 'front'",
+      whereArgs: [name],
+      orderBy: 'released_at IS NULL, released_at DESC',
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Printing.fromRow(rows.first);
+  }
+
   /// Free-text search by name or set (Section 8, collection search). Returns one
   /// representative front-face printing per scryfall_id, name-ordered.
   Future<List<Printing>> search(String query, {int limit = 100}) async {

@@ -58,6 +58,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   String? _pendingMatchKey; // candidate awaiting consecutive agreement
   int _pendingMatchCount = 0;
   final Map<String, Printing?> _printingCache = {}; // illustration/sid -> Printing?
+  List<({String norm, String name})>? _nameIndex; // OCR full-bundle name lookup
   int _frames = 0; // fps window
   DateTime _fpsT0 = DateTime.now();
   bool _paused = false; // true while the version row is up (Quick OFF / editing)
@@ -199,6 +200,21 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     }
   }
 
+  /// Build (once) the normalized card-name index for the OCR full-bundle lookup.
+  Future<List<({String norm, String name})>?> _ensureNameIndex() async {
+    if (_nameIndex != null) return _nameIndex;
+    try {
+      final db = await ref.read(cardDatabaseProvider.future);
+      final names = await db.distinctNames();
+      _nameIndex = [
+        for (final n in names) (norm: CardOcr.normalize(n), name: n)
+      ];
+    } catch (_) {
+      return null;
+    }
+    return _nameIndex;
+  }
+
   void _trackFps(int fastDetectMs) {
     _frames++;
     final dt = DateTime.now().difference(_fpsT0).inMilliseconds;
@@ -248,42 +264,52 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     final second = top.length > 1 ? top[1].distance : 999;
     final nearTie = (second - best) <= _tieMargin;
 
-    // Trust the multi-scale rank-1 (15/15 on the benchmark). Only when the top
-    // two are a near-tie do we OCR the card name to break it — keeps the common
-    // case fast and reserves OCR for genuine ambiguity.
-    var chosen = 0;
+    // Identify the card. Confident rank-1 is trusted as-is. On a near-tie we OCR
+    // the name and either (1) match it to a top-K candidate, or (2) look it up
+    // in the full bundle by name — catching cards pHash didn't shortlist (busy
+    // retro frames). If OCR can't confirm a card, we do NOT commit a guess.
+    Printing? resolved;
     var ocrMs = 0;
     if (nearTie) {
-      // Lazy JPEG (Option A): encode the warp only now that a tie needs OCR.
       final s2 = Stopwatch()..start();
       final proc = _proc;
       final jpeg = proc == null
           ? null
           : (await proc.process(nv21, w, h, rotation, jpegOnly: true)).warpJpeg;
+      var text = '';
       if (jpeg != null) {
+        text = await CardOcr.readText(jpeg);
         final names = [for (final mm in top) (await resolve(mm.index))?.name ?? ''];
-        final text = await CardOcr.readText(jpeg);
         final picked = CardOcr.bestMatch(text, names);
-        if (picked >= 0) chosen = picked;
-        if (kScanDebug) {
-          debugPrint('scan OCR(${s2.elapsedMilliseconds}ms) -> '
-              '${picked >= 0 ? names[picked] : "(no match)"} | cands=${names.take(3).join("|")}');
+        if (picked >= 0) {
+          resolved = await resolve(top[picked].index);
+        } else {
+          final idx = await _ensureNameIndex();
+          final nm = idx == null ? null : CardOcr.matchBundleName(text, idx);
+          if (nm != null) resolved = await svc.cardDb.getByExactName(nm);
         }
       }
       ocrMs = s2.elapsedMilliseconds;
+      if (kScanDebug) {
+        debugPrint('scan OCR(${ocrMs}ms) text="${text.replaceAll("\n", " ").trim()}" '
+            '-> ${resolved?.name ?? "(unresolved)"}');
+      }
+      if (resolved == null) {
+        _pendingMatchKey = null; // tie unconfirmed -> keep scanning, no guess
+        _pendingMatchCount = 0;
+        return;
+      }
+    } else {
+      resolved = await resolve(top.first.index);
     }
-
-    final m = top[chosen];
-    final ill = svc.matcher.illustrationIds[m.index];
-    final sid = svc.matcher.scryfallIds[m.index];
-    final key = ill ?? sid;
+    if (resolved == null) return;
+    final card = resolved;
+    final key = card.illustrationId ?? card.scryfallId;
 
     if (kScanDebug) {
-      final pr = await resolve(m.index);
-      debugPrint('scan pick=${pr?.name ?? "?"} dist=${m.distance} '
-          'margin=${second - best} tie=$nearTie detect=${res.detectMs}ms '
-          'match=${matchMs}ms ocr=${ocrMs}ms pend=$_pendingMatchCount '
-          'breakdown=${res.timings}');
+      debugPrint('scan pick=${card.name} dist=$best margin=${second - best} '
+          'tie=$nearTie detect=${res.detectMs}ms match=${matchMs}ms ocr=${ocrMs}ms '
+          'pend=$_pendingMatchCount breakdown=${res.timings}');
     }
 
     // Adaptive consensus: a clearly confident match (large margin to #2) commits
@@ -299,10 +325,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     if (_pendingMatchCount < needed) return;
     if (key == _lastAddedKey) return; // still in view -> don't duplicate
 
-    final rep = await resolve(m.index);
-    if (rep == null) return;
     final versions = groupCardVersions(
-        await svc.cardDb.printingsForCard(rep.name, oracleId: rep.oracleId));
+        await svc.cardDb.printingsForCard(card.name, oracleId: card.oracleId));
     if (versions.isEmpty) return;
 
     if (kScanDebug) {
@@ -311,7 +335,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
         final pr = await resolve(top[i].index);
         parts.add('${top[i].distance}:${pr?.name ?? "?"}');
       }
-      debugPrint('scan ADD ${rep.name} | top5: ${parts.join("  ")}');
+      debugPrint('scan ADD ${card.name} | top5: ${parts.join("  ")}');
     }
 
     _lastRecognized = DateTime.now();
@@ -320,25 +344,25 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     _pendingMatchCount = 0;
     final s = ref.read(scanSettingsProvider);
     if (s.quickMode) {
-      // Default to the MATCHED artwork's printing (the scanned set/version);
+      // Default to the identified printing (the scanned set/art when known);
       // Lock-set overrides the set, Prefer-foil sets the finish.
-      final chosen = _resolveQuickPrinting(rep, versions, s);
+      final pick = _resolveQuickPrinting(card, versions, s);
       final item = ref.read(scanSessionProvider.notifier).add(
-            chosen,
-            finish: _quickFinish(chosen, s),
-            distance: m.distance,
+            pick,
+            finish: _quickFinish(pick, s),
+            distance: best,
           );
       ScanFeedback.added(sound: s.playSounds);
       if (mounted) setState(() => _activeItemId = item.id);
     } else {
-      final mf = _matchedFirst(versions, rep);
+      final mf = _matchedFirst(versions, card);
       if (mounted) {
         setState(() {
           _paused = true;
           _editingItemId = null;
           _pendingVersions = mf.ordered;
           _pendingSelectedId = mf.selectedId;
-          _pendingName = rep.name;
+          _pendingName = card.name;
         });
       }
     }

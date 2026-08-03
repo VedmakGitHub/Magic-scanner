@@ -98,8 +98,13 @@ class FrameProcessor {
             'hash': swh.elapsedMilliseconds,
           };
         } else if (msg.jpegOnly && det.warp != null) {
-          // Lazy: only encoded when a near-tie actually needs OCR.
-          warpJpeg = Uint8List.fromList(img.encodeJpg(det.warp!, quality: 88));
+          // Lazy + title strip: OCR only the top ~15% (the card name), upscaled,
+          // so the read is clean and free of rules-text noise.
+          final wimg = det.warp!;
+          final strip = img.copyCrop(wimg,
+              x: 0, y: 0, width: wimg.width, height: (wimg.height * 0.15).round());
+          final up = img.copyResize(strip, width: strip.width * 2);
+          warpJpeg = Uint8List.fromList(img.encodeJpg(up, quality: 90));
         }
         final quad = <double>[
           for (final p in det.quad) ...[p.dx, p.dy]

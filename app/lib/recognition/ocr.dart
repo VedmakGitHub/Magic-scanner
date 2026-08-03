@@ -60,4 +60,23 @@ class CardOcr {
     }
     return bestScore >= minScore ? bestIndex : -1;
   }
+
+  /// Find the longest bundle card name that appears in the OCR [text]. [names]
+  /// is a precomputed list of (normalized name, original name). Returns the
+  /// original name, or null if none is present. Used when the true card is not
+  /// in the pHash shortlist (look the read name up in the full bundle).
+  static String? matchBundleName(
+      String text, List<({String norm, String name})> names) {
+    final hay = normalize(text);
+    if (hay.length < 3) return null;
+    String? best;
+    var bestLen = 0;
+    for (final n in names) {
+      if (n.norm.length > bestLen && n.norm.length >= 3 && hay.contains(n.norm)) {
+        best = n.name;
+        bestLen = n.norm.length;
+      }
+    }
+    return best;
+  }
 }

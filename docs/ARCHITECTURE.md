@@ -36,7 +36,7 @@ change proposal (format at the bottom) and getting sign-off.
 | 4 | **Hash** | Multi-scale 256-bit pHash at the inset set. | `phash.dart` `multiScale` |
 | 5 | **Nearest-neighbour match** | Hamming top-K over the reference hashes (min distance across insets). | `matcher.dart` `topKMulti` |
 | 6 | **Confidence** | best distance + margin to #2 → confident / near-tie / weak. | `scan_screen.dart` `_handleMatch` |
-| 7 | **OCR disambiguation** | Near-tie only: encode the warp JPEG **on-demand** (lazy — not every pass), read the printed name, pick the matching candidate. | `ocr.dart` `CardOcr`, `frame_processor.dart` `process(jpegOnly:)` |
+| 7 | **OCR disambiguation** | Near-tie only: encode a **title-strip** JPEG on-demand, OCR the name; match it to a top-K candidate, **else look it up in the full bundle by name** (catches cards pHash didn't shortlist). If unconfirmed, **don't commit**. | `ocr.dart` `CardOcr`, `card_database.dart` `getByExactName`, `frame_processor.dart` `process(jpegOnly:)` |
 | 8 | **Confirmation (consensus)** | Adaptive: a clearly confident match (margin to #2 ≥ 12) commits on the **first** stable frame; marginal/near-tie matches need **2** agreeing frames. | `scan_screen.dart` `_pendingMatchKey/_pendingMatchCount` |
 | 9 | **Dedup / lifecycle** | Don't re-add the same physical card until it leaves the frame; re-arm after N no-detect frames. (Distinct from consensus.) | `scan_screen.dart` `_lastAddedKey`, `_noDetectStreak` |
 | 10 | **Resolve + apply settings** | Matched illustration → **its own printing** (the scanned set/art) as the default; Lock-set overrides the set, Prefer-foil the finish → final card + finish. | `scan_screen.dart` `_resolveQuickPrinting`, `_quickFinish` |
@@ -94,6 +94,12 @@ Example:
 
 ## Decision log
 Approved changes (via the rule above), newest first.
+
+### 2026-06-21 — OCR full-bundle name lookup + tie safety
+- **Change:** on a near-tie, OCR a title-strip crop and resolve the card by (1) matching the read name to a top-K candidate, else (2) an indexed full-bundle name lookup (`getByExactName`, via an in-memory normalized-name index). If neither confirms a card, **do not commit** (keep scanning) — stops wrong-card false adds.
+- **Why:** logs showed busy-blue retro frames (Flare of Denial) where the true card is frequently *outside* the pHash top-5, so the old OCR-among-top-5 couldn't pick it and a flipping wrong rank-1 either never committed or committed the wrong card (Paradigm Shift / Avenger en-Dal).
+- **Cost:** OCR + lazy JPEG already paid on ties; the new bit is an ~5–20 ms in-memory name scan + one indexed `name = ?` query (a one-time ~tens-of-ms name-index build on first tie). Confident cards still run zero OCR.
+- **Code:** `card_database.dart` `distinctNames`/`getByExactName`; `ocr.dart` `matchBundleName`; `frame_processor.dart` jpegOnly title-strip; `scan_screen.dart` `_handleMatch`/`_ensureNameIndex`.
 
 ### 2026-06-21 — P4 adaptive consensus
 - **Change:** consensus 3 → adaptive (1 frame if margin ≥ 12, else 2).
