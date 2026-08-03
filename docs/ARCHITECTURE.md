@@ -69,18 +69,28 @@ high res + full-res capture detection + the 6-inset set above.
 
 ---
 
-## Deferred (not in scope; documented so they aren't half-built)
-- **Buylist / purchase price** — result panel shows a placeholder; no real price source yet.
-- **Ignore promos** / **Display total value** — settings plumbing exists (`ScanSettings`) but the UI controls are hidden until implemented.
-- **Price currency/region** localization (the country-flag price).
-- **Ownership counts** (decks/wishlist) — collection count only.
-- **Set-symbol disk cache** — currently session-memory cached.
-- **Nav tabs** Home / Search / Decks (ManaBox has them; out of scope).
-- **OCR title-crop + upscale** — currently OCRs the whole warp.
-- **Resource profiling (future phase)** — measure CPU / memory / battery impact during continuous scanning to understand device-lifetime/performance cost. Not this phase.
-- **Exclude online-only sets** — we scan physical cards, so MTGO/Arena (and other digital-only) printings can never be present. Filter them out in `dataprep/build_bundle.py` (and/or queries) so they don't appear as candidates/versions. Backlog.
-- **Common set symbol legibility** — a Common (black) symbol is indistinguishable from a black spot on the dark theme (and the fallback dot is a black circle). Investigate a fix (outline/ring, lighter rendering, or shape cue). Backlog.
-- **Hash compute cost (~500 ms)** — the 6-inset pHash is the dominant per-attempt cost; profile/AOT does NOT improve it (allocation/memory-bound in the `image` package), and it's parity-locked to the Python reference pipeline. A real fix needs an allocation-light/native resize that stays bit-identical, or a re-hash of the bundle. Backlog. (Measured: AOT cut `match` 260→55 ms but left `hash` ~500 ms.)
+## Deferred / backlog (documented so they aren't half-built)
+Tags: effort S/M/L, value L/M/H. (DONE 2026-08-03: OCR title-crop + upscale — the `b5d1f06` fix crops+upscales the title strip.)
+
+**Recognition / perf**
+- **Hash compute cost (~500 ms)** [L, High] — the 6-inset pHash dominates each attempt; profile/AOT does NOT help (allocation/memory-bound in the `image` package) and it's parity-locked to the Python reference pipeline. Real fix = an allocation-light/native resize that stays bit-identical, or accept a change and re-hash the bundle. (AOT cut `match` 260→55 ms but left `hash` ~500 ms.) Needs a spike + change-proposal.
+- **Exclude online-only sets** [S–M, Med] — MTGO/Arena/digital printings can never be a physical scan yet pollute candidates/versions. Filter `digital`/non-paper in `dataprep/build_bundle.py` (needs a bundle rebuild) or at query/match time (faster to ship; their hashes still occupy the matcher).
+
+**Data / pricing**
+- **Buylist / purchase price** [S→L, Med] — result panel shows a placeholder. We already have Scryfall RETAIL prices in the bundle (`price_usd`/`price_usd_foil`) — cheap to show as "est." Real buylist needs an external API + keys + legal review. Edit-panel purchase-price is a user-entered field (small).
+- **Price currency/region** [M, Low] — localized price + country flag; needs FX rates + locale (USD only now).
+
+**UI polish**
+- **Common set-symbol legibility** [S, Low–Med] — Common = black symbol (and the fallback dot is a black circle) near-invisible on the dark theme; add an outline/ring/lighter rendering. Isolated to the `SetSymbol` widget.
+- **Set-symbol disk cache** [S, Low–Med] — session-memory only; add a bytes disk cache for offline + fewer refetches.
+- **Ignore promos / Display total value** [S each, Low–Med] — `ScanSettings` plumbing exists, UI toggles hidden. Ignore-promos filters promos in the version pick; Display-total shows the session/collection total.
+- **Ownership counts (decks/wishlist)** [L, Low] — edit-panel `📇/🃏/◈` shows collection count only; decks/wishlist aren't features yet.
+- **Nav tabs Home / Search / Decks** [L, product-scope] — we have Scan/Collection/Settings; Home/Search are modest, Decks is a whole feature.
+
+**Ops**
+- **Resource profiling** [M, Med] — measure CPU/memory/battery during continuous scanning (OCR + 6-inset hash are heavy) via the Android profiler / `adb dumpsys` or in-app counters.
+
+Suggested next: cheap wins = exclude online-only sets, common-symbol legibility, set-symbol disk cache, show est. price. Big (risky) lever = hash compute cost. Product-scope calls = decks/nav, buylist, ownership counts.
 
 ---
 
