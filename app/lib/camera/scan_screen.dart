@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -91,6 +92,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       if (_proc == null) {
         _proc = FrameProcessor();
         await _proc!.start();
+        // Pre-load the ML Kit model now so the first hard-card OCR tiebreak
+        // doesn't pay the one-time ~1s model warm-up (P-D).
+        unawaited(CardOcr.warmUp());
       }
       final cams = await availableCameras();
       if (cams.isEmpty) {
@@ -273,9 +277,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     if (nearTie) {
       final s2 = Stopwatch()..start();
       final proc = _proc;
+      // Reuse the warp cached by the full pass we just ran on this frame (P-B)
+      // instead of re-detecting/re-warping just to encode the title strip.
       final jpeg = proc == null
           ? null
-          : (await proc.process(nv21, w, h, rotation, jpegOnly: true)).warpJpeg;
+          : (await proc.process(nv21, w, h, rotation, jpegFromLast: true)).warpJpeg;
       var text = '';
       if (jpeg != null) {
         text = await CardOcr.readText(jpeg);
@@ -313,9 +319,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     }
 
     // Adaptive consensus: a clearly confident match (large margin to #2) commits
-    // on the first stable frame; marginal/near-tie matches need _consensus
-    // agreeing frames to reject transient mis-identifications.
-    final needed = (second - best) >= _confidentSkipMargin ? 1 : _consensus;
+    // on the first stable frame; marginal pHash-only matches need _consensus
+    // agreeing frames to reject transient mis-identifications. A near-tie that
+    // OCR positively confirmed is strong independent evidence (tie-safety
+    // already rejected unconfirmed reads), so it also commits on the first
+    // frame instead of paying a second ~900 ms OCR pass (P-A).
+    final ocrConfirmed = nearTie; // reaching here on a near-tie => OCR resolved it
+    final needed =
+        (ocrConfirmed || (second - best) >= _confidentSkipMargin) ? 1 : _consensus;
     if (key == _pendingMatchKey) {
       _pendingMatchCount++;
     } else {

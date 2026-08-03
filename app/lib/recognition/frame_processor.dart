@@ -48,20 +48,24 @@ class FrameProcessor {
   /// Process one NV21 frame. Modes (only one in flight at a time):
   ///  - default: fast downscaled detect, quad only (smooth live overlay)
   ///  - [full]: full-res detect + warp + multi-scale hash (for matching)
-  ///  - [jpegOnly]: full-res detect + warp + JPEG encode (for the OCR tiebreak)
-  /// The JPEG is encoded ONLY on demand (jpegOnly), not on every full pass —
-  /// see the "Lazy JPEG (Option A)" decision in docs/ARCHITECTURE.md.
+  ///  - [jpegOnly]: full-res detect + warp + JPEG encode (standalone tiebreak)
+  ///  - [jpegFromLast]: encode the OCR title strip from the warp cached by the
+  ///    preceding [full] pass (SAME frame) — skips a redundant detect+warp.
+  /// The JPEG is encoded ONLY on demand, not on every full pass — see the
+  /// "Lazy JPEG (Option A)" decision in docs/ARCHITECTURE.md.
   Future<FrameResult> process(Uint8List nv21, int w, int h, int rotation,
-      {bool full = false, bool jpegOnly = false}) {
+      {bool full = false, bool jpegOnly = false, bool jpegFromLast = false}) {
     final c = Completer<FrameResult>();
     _pending = c;
+    // jpegFromLast reuses the cached warp, so no frame bytes need transferring.
     _sendPort.send(_FrameJob(
-      TransferableTypedData.fromList([nv21]),
+      TransferableTypedData.fromList([jpegFromLast ? Uint8List(0) : nv21]),
       w,
       h,
       rotation,
       full,
       jpegOnly,
+      jpegFromLast,
     ));
     return c.future;
   }
@@ -74,9 +78,22 @@ class FrameProcessor {
   static void _entry(SendPort main) {
     final port = ReceivePort();
     main.send(port.sendPort);
+    // Warp from the last `full` pass, kept so a same-frame jpegFromLast tiebreak
+    // can encode the title strip without re-running detect+warp.
+    img.Image? lastWarp;
     port.listen((msg) {
       if (msg is _FrameJob) {
         final sw = Stopwatch()..start();
+        if (msg.jpegFromLast) {
+          final wimg = lastWarp;
+          if (wimg == null) {
+            main.send(FrameResult(false, const [], 0, 0, null, null, sw.elapsedMilliseconds));
+            return;
+          }
+          main.send(FrameResult(true, const [], wimg.width, wimg.height, null,
+              _encodeTitleStrip(wimg), sw.elapsedMilliseconds));
+          return;
+        }
         final nv21 = msg.data.materialize().asUint8List();
         final wantWarp = msg.full || msg.jpegOnly;
         final det =
@@ -89,6 +106,7 @@ class FrameProcessor {
         Uint8List? warpJpeg;
         var timings = const <String, int>{};
         if (msg.full && det.warp != null) {
+          lastWarp = det.warp; // cache for a possible jpegFromLast this frame
           final swh = Stopwatch()..start();
           hashes = PerceptualHash.multiScale(det.warp!);
           final hashMs = swh.elapsedMilliseconds;
@@ -105,13 +123,7 @@ class FrameProcessor {
             'h.pack': mt['pack'] ?? -1,
           };
         } else if (msg.jpegOnly && det.warp != null) {
-          // Lazy + title strip: OCR only the top ~15% (the card name), upscaled,
-          // so the read is clean and free of rules-text noise.
-          final wimg = det.warp!;
-          final strip = img.copyCrop(wimg,
-              x: 0, y: 0, width: wimg.width, height: (wimg.height * 0.15).round());
-          final up = img.copyResize(strip, width: strip.width * 2);
-          warpJpeg = Uint8List.fromList(img.encodeJpg(up, quality: 90));
+          warpJpeg = _encodeTitleStrip(det.warp!);
         }
         final quad = <double>[
           for (final p in det.quad) ...[p.dx, p.dy]
@@ -121,6 +133,15 @@ class FrameProcessor {
       }
     });
   }
+
+  /// Crop the top ~15% (the card name) and upscale 2x so the OCR read is clean
+  /// and free of rules-text noise.
+  static Uint8List _encodeTitleStrip(img.Image wimg) {
+    final strip = img.copyCrop(wimg,
+        x: 0, y: 0, width: wimg.width, height: (wimg.height * 0.15).round());
+    final up = img.copyResize(strip, width: strip.width * 2);
+    return Uint8List.fromList(img.encodeJpg(up, quality: 90));
+  }
 }
 
 class _FrameJob {
@@ -128,6 +149,7 @@ class _FrameJob {
   final int w, h, rotation;
   final bool full;
   final bool jpegOnly;
-  const _FrameJob(
-      this.data, this.w, this.h, this.rotation, this.full, this.jpegOnly);
+  final bool jpegFromLast;
+  const _FrameJob(this.data, this.w, this.h, this.rotation, this.full,
+      this.jpegOnly, this.jpegFromLast);
 }

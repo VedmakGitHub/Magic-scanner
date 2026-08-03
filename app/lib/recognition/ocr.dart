@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
 /// On-device OCR used only as a TIEBREAKER when pHash returns a cluster of
@@ -13,6 +14,22 @@ class CardOcr {
   static final TextRecognizer _recognizer =
       TextRecognizer(script: TextRecognitionScript.latin);
   static String? _tmpPath;
+  static bool _warmed = false;
+
+  /// Pre-load the ML Kit text model so the FIRST real tiebreak doesn't pay the
+  /// one-time ~1s model-load penalty (measured: first OCR ~2000 ms vs ~900 ms
+  /// warm). Fire-and-forget at startup; safe to call more than once.
+  static Future<void> warmUp() async {
+    if (_warmed) return;
+    _warmed = true;
+    try {
+      final im = img.Image(width: 32, height: 32);
+      img.fill(im, color: img.ColorRgb8(255, 255, 255));
+      await readText(Uint8List.fromList(img.encodeJpg(im, quality: 90)));
+    } catch (_) {
+      // best-effort; the first real OCR will still work, just slower
+    }
+  }
 
   /// OCR the warped-card JPEG and return its raw text (empty on failure).
   static Future<String> readText(Uint8List jpeg) async {
