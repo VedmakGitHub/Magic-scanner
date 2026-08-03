@@ -73,7 +73,7 @@ high res + full-res capture detection + the 6-inset set above.
 Tags: effort S/M/L, value L/M/H. (DONE 2026-08-03: OCR title-crop + upscale — the `b5d1f06` fix crops+upscales the title strip.)
 
 **Recognition / perf**
-- **Hash compute cost (~500 ms)** [L, High] — the 6-inset pHash dominates each attempt; profile/AOT does NOT help (allocation/memory-bound in the `image` package) and it's parity-locked to the Python reference pipeline. Real fix = an allocation-light/native resize that stays bit-identical, or accept a change and re-hash the bundle. (AOT cut `match` 260→55 ms but left `hash` ~500 ms.) Needs a spike + change-proposal.
+- **Hash compute cost (~500 ms)** [L, High] — *OPTIMIZED 2026-08-03 (`8aa026a` instrument, `79a8344` fix), bit-identical; awaiting on-device before/after.* Root cause was NOT the resize but the grayscale: `multiScale` grayscaled the card 6× via per-pixel `image.getPixel` plus 5× `copyCrop`. Fix = grayscale the full warp **once** (single contiguous `getBytes(rgb)` pass) and window each inset over that shared buffer (no crop). Output is bit-identical (parity + windowed==crop tests green), so NOT a tunable change. Expected `hash` ~500 ms → ~40–90 ms; confirm with the `h.gray/h.crop/h.resize/h.dct/h.pack` sub-step log. If the measured floor is still too high, the next lever is a native/allocation-light resize or accepting a bit-change + bundle re-hash.
 - **Exclude online-only sets** [S–M, Med] — MTGO/Arena/digital printings can never be a physical scan yet pollute candidates/versions. Filter `digital`/non-paper in `dataprep/build_bundle.py` (needs a bundle rebuild) or at query/match time (faster to ship; their hashes still occupy the matcher).
 
 **Data / pricing**
@@ -104,6 +104,13 @@ Example:
 
 ## Decision log
 Approved changes (via the rule above), newest first.
+
+### 2026-08-03 — Hash grayscale-once + windowed resize (bit-identical, measure-first)
+- **Change:** `PerceptualHash.multiScale` no longer grayscales the card 6× (per inset) with per-pixel `getPixel` + 5× `copyCrop`. It grayscales the full warp **once** into a flat buffer via a single contiguous `getBytes(order: rgb)` pass, then hashes each inset as a sub-window of that buffer (offset indexing in the box resize).
+- **Why:** sub-step reasoning (confirmed by the Commit-1 instrumentation) pinned the ~500 ms `hash` step on grayscale + crop allocations in the `image` package, not the DCT/resize/matcher.
+- **Not a tunable change:** output is **bit-identical** — insets, resolution, warp size all unchanged. Guarded by `phash_parity_test` (18 fixtures vs Python golden) + new `phash_multiscale_test` (windowed inset == crop-then-hash for all 6 insets; BGR==RGB; RGBA==RGB).
+- **Process:** done as Option A / two commits — `8aa026a` adds sub-step timings (measure), `79a8344` applies the fix. Expected `hash` ~500 ms → ~40–90 ms; on-device before/after still to be captured via the `h.*` breakdown.
+- **Code:** `phash.dart` `multiScale`/`fromImage`/`_toGrayFlat`/`_resizeBoxWindow`/`_hashFromGrayWindow`; timings surfaced in `frame_processor.dart`.
 
 ### 2026-06-21 — OCR full-bundle name lookup + tie safety
 - **Change:** on a near-tie, OCR a title-strip crop and resolve the card by (1) matching the read name to a top-K candidate, else (2) an indexed full-bundle name lookup (`getByExactName`, via an in-memory normalized-name index). If neither confirms a card, **do not commit** (keep scanning) — stops wrong-card false adds.
