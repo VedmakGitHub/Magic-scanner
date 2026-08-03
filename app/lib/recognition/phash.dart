@@ -48,12 +48,20 @@ class PerceptualHash {
     _accSw
       ..reset()
       ..start();
-    final gray = _toGray(image);
+    final gray = _toGrayFlat(image);
     _accGrayUs += _accSw.elapsedMicroseconds;
+    return _hashFromGrayWindow(gray, image.width, 0, 0, image.width, image.height);
+  }
+
+  /// Hash a rectangular sub-window of a pre-computed flat gray buffer.
+  /// [fullW] is the buffer's row stride; the window is [offX,offX+w) x
+  /// [offY,offY+h). Bit-identical to graying+resizing a cropped copy.
+  static Uint8List _hashFromGrayWindow(
+      Int32List gray, int fullW, int offX, int offY, int w, int h) {
     _accSw
       ..reset()
       ..start();
-    final resized = _resizeBox(gray, image.width, image.height);
+    final resized = _resizeBoxWindow(gray, fullW, offX, offY, w, h);
     _accResizeUs += _accSw.elapsedMicroseconds;
     _accSw
       ..reset()
@@ -74,31 +82,37 @@ class PerceptualHash {
   /// the crop that strips the sleeve margin. No-sleeve cards win at 0%.
   static List<Uint8List> multiScale(img.Image card, {List<double> insets = kInsets}) {
     _accGrayUs = _accResizeUs = _accDctUs = _accPackUs = 0;
-    var cropUs = 0;
-    final cropSw = Stopwatch();
+    _accSw
+      ..reset()
+      ..start();
     final w = card.width, h = card.height;
+    // Grayscale the FULL card ONCE. Every inset is a sub-window of this buffer;
+    // grayscale is per-pixel, so windowing the shared gray is bit-identical to
+    // cropping-then-graying — but pays the expensive conversion a single time
+    // instead of 6x (and drops the 5x copyCrop entirely).
+    final gray = _toGrayFlat(card);
+    _accGrayUs += _accSw.elapsedMicroseconds;
+
     final out = <Uint8List>[];
     for (final p in insets) {
-      if (p <= 0) {
-        out.add(fromImage(card));
-        continue;
+      var dx = 0, dy = 0, cw = w, ch = h;
+      if (p > 0) {
+        dx = (w * p).round();
+        dy = (h * p).round();
+        cw = w - 2 * dx;
+        ch = h - 2 * dy;
+        if (cw < 16 || ch < 16) {
+          dx = 0;
+          dy = 0;
+          cw = w;
+          ch = h;
+        }
       }
-      final dx = (w * p).round(), dy = (h * p).round();
-      final cw = w - 2 * dx, ch = h - 2 * dy;
-      if (cw < 16 || ch < 16) {
-        out.add(fromImage(card));
-      } else {
-        cropSw
-          ..reset()
-          ..start();
-        final cropped = img.copyCrop(card, x: dx, y: dy, width: cw, height: ch);
-        cropUs += cropSw.elapsedMicroseconds;
-        out.add(fromImage(cropped));
-      }
+      out.add(_hashFromGrayWindow(gray, w, dx, dy, cw, ch));
     }
     lastMultiScaleTimings = {
       'gray': (_accGrayUs / 1000).round(),
-      'crop': (cropUs / 1000).round(),
+      'crop': 0, // eliminated (windowed on the shared gray buffer)
       'resize': (_accResizeUs / 1000).round(),
       'dct': (_accDctUs / 1000).round(),
       'pack': (_accPackUs / 1000).round(),
@@ -126,12 +140,37 @@ class PerceptualHash {
   }
 
   // --- Step 2: grayscale (Y = 0.299R + 0.587G + 0.114B, floor(.+0.5)) -------
-  static List<Int32List> _toGray(img.Image image) {
+  // Flat row-major buffer. Fast path: 8-bit images (the OpenCV warp and the test
+  // fixtures) are read via a single contiguous getBytes(rgb) pass, avoiding
+  // ~w*h Pixel-accessor allocations. Bit-identical to the per-pixel path (same Y
+  // formula, same clamp); getBytes(order: rgb) normalizes channel order so a
+  // BGR-stored warp yields the same R/G/B as getPixel.
+  static Int32List _toGrayFlat(img.Image image) {
     final w = image.width;
     final h = image.height;
-    final out = List<Int32List>.generate(h, (_) => Int32List(w), growable: false);
+    final out = Int32List(w * h);
+    if (image.data?.bitsPerChannel == 8) {
+      final bytes = image.getBytes(order: img.ChannelOrder.rgb);
+      final channels = bytes.length ~/ (w * h); // 3 for rgb (defensive vs 4)
+      var bi = 0;
+      for (var i = 0; i < out.length; i++) {
+        final r = bytes[bi].toDouble();
+        final g = bytes[bi + 1].toDouble();
+        final b = bytes[bi + 2].toDouble();
+        bi += channels;
+        var yy = (0.299 * r + 0.587 * g + 0.114 * b + 0.5).floor();
+        if (yy < 0) {
+          yy = 0;
+        } else if (yy > 255) {
+          yy = 255;
+        }
+        out[i] = yy;
+      }
+      return out;
+    }
+    // Fallback (non-8-bit): general per-pixel path.
+    var i = 0;
     for (var y = 0; y < h; y++) {
-      final row = out[y];
       for (var x = 0; x < w; x++) {
         final p = image.getPixel(x, y);
         final r = p.r.toDouble();
@@ -143,14 +182,19 @@ class PerceptualHash {
         } else if (yy > 255) {
           yy = 255;
         }
-        row[x] = yy;
+        out[i++] = yy;
       }
     }
     return out;
   }
 
   // --- Step 3: deterministic area/box resize to kResizeN x kResizeN ---------
-  static List<Float64List> _resizeBox(List<Int32List> gray, int w, int h) {
+  // Resizes the [w]x[h] window at ([offX],[offY]) of the flat [gray] buffer
+  // (row stride [fullW]) to kResizeN x kResizeN. Arithmetic is identical to the
+  // whole-image box resize; only the source indexing carries the window offset,
+  // so a windowed inset is bit-identical to graying+resizing a cropped copy.
+  static List<Float64List> _resizeBoxWindow(
+      Int32List gray, int fullW, int offX, int offY, int w, int h) {
     const n = kResizeN;
     final out = List<Float64List>.generate(n, (_) => Float64List(n), growable: false);
     for (var oy = 0; oy < n; oy++) {
@@ -167,7 +211,7 @@ class PerceptualHash {
           final bot = (iy + 1) < y1 ? (iy + 1).toDouble() : y1;
           final fy = bot - top;
           if (fy > 0.0) {
-            final grow = gray[iy];
+            final rowBase = (iy + offY) * fullW + offX;
             var ix = x0.floor();
             while (ix < x1) {
               final left = ix > x0 ? ix.toDouble() : x0;
@@ -175,7 +219,7 @@ class PerceptualHash {
               final fx = right - left;
               if (fx > 0.0) {
                 final wgt = fx * fy;
-                total += grow[ix] * wgt;
+                total += gray[rowBase + ix] * wgt;
                 area += wgt;
               }
               ix++;
