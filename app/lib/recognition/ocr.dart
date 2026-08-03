@@ -15,28 +15,47 @@ class CardOcr {
       TextRecognizer(script: TextRecognitionScript.latin);
   static String? _tmpPath;
   static bool _warmed = false;
+  static Future<void>? _warming;
 
   /// Pre-load the ML Kit text model so the FIRST real tiebreak doesn't pay the
   /// one-time ~1s model-load penalty (measured: first OCR ~2000 ms vs ~900 ms
-  /// warm). Fire-and-forget at startup; safe to call more than once.
-  static Future<void> warmUp() async {
-    if (_warmed) return;
-    _warmed = true;
+  /// warm). Fire this once at startup; [readText] AWAITS it, so the load is paid
+  /// during idle startup/lineup time rather than by the first hard card, and no
+  /// real read races the model load. Cached — safe to call more than once.
+  static Future<void> warmUp() => _warming ??= _doWarmUp();
+
+  static Future<void> _doWarmUp() async {
     try {
-      final im = img.Image(width: 32, height: 32);
+      // Warm at ~the real title-strip size (top 15% of the 488x680 warp, 2x) so
+      // the model initializes for the scale it will actually see.
+      final im = img.Image(width: 976, height: 204);
       img.fill(im, color: img.ColorRgb8(255, 255, 255));
-      await readText(Uint8List.fromList(img.encodeJpg(im, quality: 90)));
+      await _recognize(Uint8List.fromList(img.encodeJpg(im, quality: 90)));
     } catch (_) {
-      // best-effort; the first real OCR will still work, just slower
+      // best-effort
     }
+    _warmed = true;
   }
 
-  /// OCR the warped-card JPEG and return its raw text (empty on failure).
+  /// OCR the warped-card JPEG and return its raw text (empty on failure). Waits
+  /// for the one-time warm-up to finish first, so a real read never races (and
+  /// pays) the model load.
   static Future<String> readText(Uint8List jpeg) async {
+    final warming = _warming;
+    if (warming != null && !_warmed) {
+      try {
+        await warming;
+      } catch (_) {}
+    }
+    return _recognize(jpeg);
+  }
+
+  static Future<String> _recognize(Uint8List jpeg) async {
     try {
       _tmpPath ??= '${(await getTemporaryDirectory()).path}/ocr_scan.jpg';
       await File(_tmpPath!).writeAsBytes(jpeg, flush: true);
-      final result = await _recognizer.processImage(InputImage.fromFilePath(_tmpPath!));
+      final result =
+          await _recognizer.processImage(InputImage.fromFilePath(_tmpPath!));
       return result.text;
     } catch (_) {
       return '';

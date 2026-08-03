@@ -82,6 +82,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Start the ML Kit model load as early as possible so its ~1s cost is hidden
+    // in startup/lineup time and ready before the first OCR tiebreak (P-D).
+    unawaited(CardOcr.warmUp());
     _init();
   }
 
@@ -92,9 +95,6 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       if (_proc == null) {
         _proc = FrameProcessor();
         await _proc!.start();
-        // Pre-load the ML Kit model now so the first hard-card OCR tiebreak
-        // doesn't pay the one-time ~1s model warm-up (P-D).
-        unawaited(CardOcr.warmUp());
       }
       final cams = await availableCameras();
       if (cams.isEmpty) {
