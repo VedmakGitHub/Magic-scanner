@@ -91,11 +91,18 @@ class FrameProcessor {
         if (msg.full && det.warp != null) {
           final swh = Stopwatch()..start();
           hashes = PerceptualHash.multiScale(det.warp!);
+          final hashMs = swh.elapsedMilliseconds;
+          final mt = PerceptualHash.lastMultiScaleTimings;
           timings = {
             'convert': lastFrameTimings['convert'] ?? -1,
             'quad': lastFrameTimings['quad'] ?? -1,
             'warp': lastFrameTimings['warp'] ?? -1,
-            'hash': swh.elapsedMilliseconds,
+            'hash': hashMs,
+            'h.gray': mt['gray'] ?? -1,
+            'h.crop': mt['crop'] ?? -1,
+            'h.resize': mt['resize'] ?? -1,
+            'h.dct': mt['dct'] ?? -1,
+            'h.pack': mt['pack'] ?? -1,
           };
         } else if (msg.jpegOnly && det.warp != null) {
           // Lazy + title strip: OCR only the top ~15% (the card name), upscaled,
