@@ -17,7 +17,7 @@ CACHE = "dataprep/image_cache"
 WARPS = "dataprep/bench/warps"
 POOL = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 
-MODE = sys.argv[2] if len(sys.argv) > 2 else "full"  # "full" | "art"
+MODE = sys.argv[2] if len(sys.argv) > 2 else "full"  # "full" | "art" | "art+auto"
 # Fractional art box on the canonical card (strips title bar, text box, borders).
 # Generous enough to cover both modern and retro frames.
 ART = (0.06, 0.09, 0.94, 0.58)  # x0,y0,x1,y1
@@ -89,8 +89,11 @@ tf = timm.data.create_transform(**cfg)
 
 def embed(path):
     im = Image.open(path).convert("RGB")
-    if MODE == "art":
+    if MODE.startswith("art"):
         im = art_crop(im)
+    if MODE.endswith("auto"):
+        from PIL import ImageOps
+        im = ImageOps.autocontrast(im, cutoff=1)
     x = tf(im).unsqueeze(0)
     with torch.no_grad():
         v = m(x)[0].numpy()
