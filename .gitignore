@@ -24,4 +24,4 @@ app/android/.gradle/
 /debug_*.jpg
 /gh
 dataprep/_*.py
-dataprep/ground_truth.json
+dataprep/ground_truth.jsondataprep/bench/warps/

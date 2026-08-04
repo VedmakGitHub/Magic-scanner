@@ -54,7 +54,10 @@ class FrameProcessor {
   /// The JPEG is encoded ONLY on demand, not on every full pass — see the
   /// "Lazy JPEG (Option A)" decision in docs/ARCHITECTURE.md.
   Future<FrameResult> process(Uint8List nv21, int w, int h, int rotation,
-      {bool full = false, bool jpegOnly = false, bool jpegFromLast = false}) {
+      {bool full = false,
+      bool jpegOnly = false,
+      bool jpegFromLast = false,
+      bool fullWarp = false}) {
     final c = Completer<FrameResult>();
     _pending = c;
     // jpegFromLast reuses the cached warp, so no frame bytes need transferring.
@@ -66,6 +69,7 @@ class FrameProcessor {
       full,
       jpegOnly,
       jpegFromLast,
+      fullWarp,
     ));
     return c.future;
   }
@@ -90,8 +94,12 @@ class FrameProcessor {
             main.send(FrameResult(false, const [], 0, 0, null, null, sw.elapsedMilliseconds));
             return;
           }
+          // fullWarp: whole canonical warp (benchmark capture); else title strip.
+          final jpg = msg.fullWarp
+              ? Uint8List.fromList(img.encodeJpg(wimg, quality: 92))
+              : _encodeTitleStrip(wimg);
           main.send(FrameResult(true, const [], wimg.width, wimg.height, null,
-              _encodeTitleStrip(wimg), sw.elapsedMilliseconds));
+              jpg, sw.elapsedMilliseconds));
           return;
         }
         final nv21 = msg.data.materialize().asUint8List();
@@ -150,6 +158,7 @@ class _FrameJob {
   final bool full;
   final bool jpegOnly;
   final bool jpegFromLast;
+  final bool fullWarp;
   const _FrameJob(this.data, this.w, this.h, this.rotation, this.full,
-      this.jpegOnly, this.jpegFromLast);
+      this.jpegOnly, this.jpegFromLast, this.fullWarp);
 }

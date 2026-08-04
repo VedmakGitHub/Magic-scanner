@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../data/models.dart';
 import '../data/providers.dart';
@@ -78,6 +80,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   static const _maxMatchDist = 70; // best above this -> treat as no card
   static const _tieMargin = 4; // top-1 within this of top-2 -> OCR tiebreak only
 
+  // --- DEBUG (kScanDebug): labeled-warp capture for the deep-fix benchmark ---
+  // With capture ON, each stable warp is saved (full 488x680 JPEG) to the app's
+  // external files dir with the typed ground-truth label + the app's own pHash
+  // guess, so we can build a REAL-photo benchmark to evaluate embeddings.
+  // Pull with: adb pull /sdcard/Android/data/<pkg>/files/warps .
+  final TextEditingController _captureLabelCtrl = TextEditingController();
+  bool _captureMode = false;
+  int _captureCount = 0;
+  DateTime _lastCapture = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _captureThrottleMs = 500;
+
   @override
   void initState() {
     super.initState();
@@ -147,6 +160,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _captureLabelCtrl.dispose();
     final p = _proc;
     _proc = null;
     _teardownCamera();
@@ -194,10 +208,19 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       if (mounted) setState(() => _smoothQuad = _smooth(_smoothQuad, quad));
 
       // Precise full-res warp + multi-scale hash only once the card is steady.
-      if (_stableCount >= _stableNeeded &&
-          now.difference(_lastRecognized).inMilliseconds > _cooldownMs) {
-        final full = await _proc!.process(bytes, w, h, rotation, full: true);
-        if (full.hashes != null) await _handleMatch(full, bytes, w, h, rotation);
+      if (_stableCount >= _stableNeeded) {
+        if (kScanDebug && _captureMode) {
+          // Benchmark capture: save the warp (labeled), do NOT add to a session.
+          if (now.difference(_lastCapture).inMilliseconds >= _captureThrottleMs) {
+            final full = await _proc!.process(bytes, w, h, rotation, full: true);
+            if (full.hashes != null) {
+              await _captureWarp(full, bytes, w, h, rotation, now);
+            }
+          }
+        } else if (now.difference(_lastRecognized).inMilliseconds > _cooldownMs) {
+          final full = await _proc!.process(bytes, w, h, rotation, full: true);
+          if (full.hashes != null) await _handleMatch(full, bytes, w, h, rotation);
+        }
       }
     } finally {
       _busy = false;
@@ -217,6 +240,63 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       return null;
     }
     return _nameIndex;
+  }
+
+  /// DEBUG: save the current stable warp (full 488x680 JPEG) tagged with the
+  /// typed ground-truth label + the app's own pHash guess/distance, for building
+  /// a real-photo benchmark. No collection add happens in capture mode.
+  Future<void> _captureWarp(FrameResult res, Uint8List nv21, int w, int h,
+      int rotation, DateTime now) async {
+    final label = _captureLabelCtrl.text.trim();
+    if (label.isEmpty) return; // ground-truth label required
+    final svc = ref.read(recognitionServiceProvider).valueOrNull;
+    final hashes = res.hashes;
+    if (svc == null || hashes == null) return;
+    // Record the app's own pHash guess (no commit) for later analysis.
+    var guess = '?';
+    var best = -1, margin = -1;
+    final top = svc.matcher.topKMulti(hashes);
+    if (top.isNotEmpty) {
+      best = top.first.distance;
+      final second = top.length > 1 ? top[1].distance : 999;
+      margin = second - best;
+      final il = svc.matcher.illustrationIds[top.first.index];
+      final sd = svc.matcher.scryfallIds[top.first.index];
+      Printing? pr =
+          il != null ? await svc.cardDb.representativeForIllustration(il) : null;
+      pr ??= await svc.cardDb.getPrinting(sd);
+      guess = pr?.name ?? '?';
+    }
+    // Full warp JPEG from the cached warp of the full pass we just ran.
+    final jpeg =
+        (await _proc!.process(nv21, w, h, rotation, jpegFromLast: true, fullWarp: true))
+            .warpJpeg;
+    if (jpeg == null) return;
+    try {
+      final base = await getExternalStorageDirectory();
+      if (base == null) return;
+      final dir = Directory('${base.path}/warps');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      final safe = label.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+      final seq = _captureCount;
+      final fname = '${safe}_$seq.jpg';
+      await File('${dir.path}/$fname').writeAsBytes(jpeg, flush: true);
+      final manifest = File('${dir.path}/manifest.csv');
+      if (!await manifest.exists()) {
+        await manifest
+            .writeAsString('file,true_label,app_guess,best_dist,margin\n');
+      }
+      await manifest.writeAsString('$fname,"$label","$guess",$best,$margin\n',
+          mode: FileMode.append);
+      _captureCount++;
+      _lastCapture = now;
+      if (mounted) setState(() {});
+      if (kScanDebug) {
+        debugPrint('CAPTURE #$seq "$label" guess="$guess" d=$best m=$margin -> $fname');
+      }
+    } catch (e) {
+      if (kScanDebug) debugPrint('capture save failed: $e');
+    }
   }
 
   void _trackFps(int fastDetectMs) {
@@ -570,6 +650,53 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
               onOpenVersions: () => _openVersionsForItem(_activeItemId!),
               onOpenEdit: () => showEditPanel(context, _activeItemId!),
               onClose: () => setState(() => _activeItemId = null),
+            ),
+          ),
+        // DEBUG: benchmark capture bar — type the card name, tap REC, hold the
+        // physical card; each stable warp is saved labeled. Never in release.
+        if (kScanDebug)
+          Positioned(
+            left: 8,
+            right: 8,
+            bottom: 16,
+            child: SafeArea(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      color: const Color(0x8C000000),
+                      child: TextField(
+                        controller: _captureLabelCtrl,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        decoration: const InputDecoration(
+                          hintText: 'benchmark label (card name)',
+                          hintStyle:
+                              TextStyle(color: Colors.white54, fontSize: 13),
+                          isDense: true,
+                          border: InputBorder.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => setState(() => _captureMode = !_captureMode),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      color: _captureMode ? Colors.red : const Color(0x8C000000),
+                      child: Text(
+                        _captureMode ? 'REC $_captureCount' : 'REC',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
       ],
