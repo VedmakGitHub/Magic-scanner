@@ -24,5 +24,8 @@ app/android/.gradle/
 /debug_*.jpg
 /gh
 dataprep/_*.py
-dataprep/ground_truth.jsondataprep/bench/warps/
+dataprep/ground_truth.json
+# Captured real-photo benchmark + diagnostics (large, kept locally only)
+dataprep/bench/warps/
 dataprep/bench/bright/
+dataprep/bench/diag_sb/
