@@ -87,6 +87,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   // Pull with: adb pull /sdcard/Android/data/<pkg>/files/warps .
   final TextEditingController _captureLabelCtrl = TextEditingController();
   bool _captureMode = false;
+  bool _benchPending = false; // one-shot ORB on-device latency spike
   int _captureCount = 0;
   DateTime _lastCapture = DateTime.fromMillisecondsSinceEpoch(0);
   static const _captureThrottleMs = 500;
@@ -209,7 +210,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
 
       // Precise full-res warp + multi-scale hash only once the card is steady.
       if (_stableCount >= _stableNeeded) {
-        if (kScanDebug && _captureMode) {
+        if (kScanDebug && _benchPending) {
+          // Step D spike: full pass populates the cached warp, then time ORB.
+          final full = await _proc!.process(bytes, w, h, rotation, full: true);
+          if (full.found) {
+            final b = await _proc!.process(bytes, w, h, rotation, orbBench: true);
+            debugPrint('ORB-BENCH ${b.timings}');
+            _benchPending = false;
+            if (mounted) setState(() {});
+          }
+        } else if (kScanDebug && _captureMode) {
           // Benchmark capture: save the warp (labeled), do NOT add to a session.
           if (now.difference(_lastCapture).inMilliseconds >= _captureThrottleMs) {
             final full = await _proc!.process(bytes, w, h, rotation, full: true);
@@ -676,6 +686,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
                           isDense: true,
                           border: InputBorder.none,
                         ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => setState(() => _benchPending = true),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      color: _benchPending
+                          ? Colors.amber
+                          : const Color(0x8C000000),
+                      child: Text(
+                        _benchPending ? 'BENCH…' : 'BENCH',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold),
                       ),
                     ),
                   ),

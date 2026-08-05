@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
+import 'package:opencv_core/opencv.dart' as cv;
 
 import 'card_detector.dart';
 import 'phash.dart';
@@ -57,12 +58,14 @@ class FrameProcessor {
       {bool full = false,
       bool jpegOnly = false,
       bool jpegFromLast = false,
-      bool fullWarp = false}) {
+      bool fullWarp = false,
+      bool orbBench = false}) {
     final c = Completer<FrameResult>();
     _pending = c;
-    // jpegFromLast reuses the cached warp, so no frame bytes need transferring.
+    // jpegFromLast/orbBench reuse the cached warp: no frame bytes to transfer.
+    final reuse = jpegFromLast || orbBench;
     _sendPort.send(_FrameJob(
-      TransferableTypedData.fromList([jpegFromLast ? Uint8List(0) : nv21]),
+      TransferableTypedData.fromList([reuse ? Uint8List(0) : nv21]),
       w,
       h,
       rotation,
@@ -70,6 +73,7 @@ class FrameProcessor {
       jpegOnly,
       jpegFromLast,
       fullWarp,
+      orbBench,
     ));
     return c.future;
   }
@@ -88,6 +92,16 @@ class FrameProcessor {
     port.listen((msg) {
       if (msg is _FrameJob) {
         final sw = Stopwatch()..start();
+        if (msg.orbBench) {
+          final wimg = lastWarp;
+          if (wimg == null) {
+            main.send(FrameResult(false, const [], 0, 0, null, null, sw.elapsedMilliseconds));
+            return;
+          }
+          main.send(FrameResult(true, const [], wimg.width, wimg.height, null,
+              null, sw.elapsedMilliseconds, _orbBench(wimg)));
+          return;
+        }
         if (msg.jpegFromLast) {
           final wimg = lastWarp;
           if (wimg == null) {
@@ -142,6 +156,120 @@ class FrameProcessor {
     });
   }
 
+  /// DEBUG SPIKE (step D of the deep-fix plan): measure on-device cost of the
+  /// ORB local-feature pipeline that beat pHash/DINOv2 offline (96.2% vs 59%).
+  /// Stages timed separately so we know where the budget goes:
+  ///   toMat/prep  warp -> Mat -> art crop -> 480px -> equalizeHist
+  ///   orb         detectAndCompute (the per-frame cost)
+  ///   match10     10x knnMatch + Lowe ratio (the stage-2 re-rank cost)
+  ///   ransac      findHomography on the genuine candidate (accept/reject)
+  /// References are synthetic (1 genuine self-match + 9 random) purely to time
+  /// the matcher; only latency is meaningful here, not accuracy.
+  static Map<String, int> _orbBench(img.Image warp) {
+    final out = <String, int>{};
+    final sw = Stopwatch();
+    cv.Mat? src, gray, art, small, eq, desc, mask;
+    cv.VecKeyPoint? kp;
+    final refs = <cv.Mat>[];
+    try {
+      sw
+        ..reset()
+        ..start();
+      final bytes = warp.getBytes(order: img.ChannelOrder.bgr);
+      src = cv.Mat.fromList(warp.height, warp.width, cv.MatType.CV_8UC3, bytes);
+      out['toMat'] = sw.elapsedMilliseconds;
+
+      sw
+        ..reset()
+        ..start();
+      gray = cv.cvtColor(src, cv.COLOR_BGR2GRAY);
+      final x0 = (warp.width * 0.06).round();
+      final y0 = (warp.height * 0.09).round();
+      final cw = (warp.width * 0.88).round();
+      final ch = (warp.height * 0.49).round();
+      art = gray.region(cv.Rect(x0, y0, cw, ch));
+      final maxEdge = cw > ch ? cw : ch;
+      final s = maxEdge > 480 ? 480 / maxEdge : 1.0;
+      small = s < 1.0
+          ? cv.resize(art, ((cw * s).round(), (ch * s).round()))
+          : art.clone();
+      eq = cv.equalizeHist(small);
+      out['prep'] = sw.elapsedMilliseconds;
+
+      sw
+        ..reset()
+        ..start();
+      final orb = cv.ORB.create(nFeatures: 100);
+      final res = orb.detectAndCompute(eq, cv.Mat.empty());
+      kp = res.$1;
+      desc = res.$2;
+      out['orb'] = sw.elapsedMilliseconds;
+      out['kp'] = kp.length;
+      if (desc.isEmpty || kp.length < 8) return out;
+
+      // 1 genuine (self) + 9 random references => realistic re-rank mix.
+      refs.add(desc.clone());
+      for (var i = 0; i < 9; i++) {
+        refs.add(cv.Mat.randu(desc.rows, desc.cols, cv.MatType.CV_8UC1));
+      }
+      sw
+        ..reset()
+        ..start();
+      final bf = cv.BFMatcher.create(type: cv.NORM_HAMMING);
+      final pairs = <int>[];
+      var good = 0;
+      for (var i = 0; i < refs.length; i++) {
+        final mm = bf.knnMatch(desc, refs[i], 2);
+        for (var j = 0; j < mm.length; j++) {
+          final m = mm[j];
+          if (m.length == 2 && m[0].distance < 0.75 * m[1].distance) {
+            good++;
+            if (i == 0) {
+              pairs.add(m[0].queryIdx);
+              pairs.add(m[0].trainIdx);
+            }
+          }
+        }
+      }
+      out['match10'] = sw.elapsedMilliseconds;
+      out['good'] = good;
+
+      sw
+        ..reset()
+        ..start();
+      if (pairs.length >= 16) {
+        final n = pairs.length ~/ 2;
+        final sp = <double>[], dp = <double>[];
+        for (var i = 0; i < n; i++) {
+          sp..add(kp[pairs[i * 2]].x)..add(kp[pairs[i * 2]].y);
+          dp..add(kp[pairs[i * 2 + 1]].x)..add(kp[pairs[i * 2 + 1]].y);
+        }
+        final sm = cv.Mat.fromList(n, 1, cv.MatType.CV_32FC2, sp);
+        final dm = cv.Mat.fromList(n, 1, cv.MatType.CV_32FC2, dp);
+        mask = cv.Mat.empty();
+        final hm = cv.findHomography(sm, dm,
+            method: cv.RANSAC, ransacReprojThreshold: 5.0, mask: mask);
+        out['inliers'] = mask.isEmpty ? -1 : cv.countNonZero(mask);
+        hm.dispose();
+        sm.dispose();
+        dm.dispose();
+      }
+      out['ransac'] = sw.elapsedMilliseconds;
+      out['total'] = (out['toMat'] ?? 0) +
+          (out['prep'] ?? 0) +
+          (out['orb'] ?? 0) +
+          (out['match10'] ?? 0) +
+          (out['ransac'] ?? 0);
+    } catch (e) {
+      out['error'] = -1;
+    } finally {
+      for (final m in [src, gray, art, small, eq, desc, mask, ...refs]) {
+        m?.dispose();
+      }
+    }
+    return out;
+  }
+
   /// Crop the top ~15% (the card name) and upscale 2x so the OCR read is clean
   /// and free of rules-text noise.
   static Uint8List _encodeTitleStrip(img.Image wimg) {
@@ -159,6 +287,7 @@ class _FrameJob {
   final bool jpegOnly;
   final bool jpegFromLast;
   final bool fullWarp;
+  final bool orbBench;
   const _FrameJob(this.data, this.w, this.h, this.rotation, this.full,
-      this.jpegOnly, this.jpegFromLast, this.fullWarp);
+      this.jpegOnly, this.jpegFromLast, this.fullWarp, this.orbBench);
 }
