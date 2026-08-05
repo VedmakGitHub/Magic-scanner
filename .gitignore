@@ -29,3 +29,6 @@ dataprep/ground_truth.json
 dataprep/bench/warps/
 dataprep/bench/bright/
 dataprep/bench/diag_sb/
+dataprep/bench/orb_refs_all.npz
+dataprep/bench/desc_cache.pkl
+dataprep/bench/vocab_tree.npz
