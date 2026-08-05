@@ -25,3 +25,4 @@ app/android/.gradle/
 /gh
 dataprep/_*.py
 dataprep/ground_truth.jsondataprep/bench/warps/
+dataprep/bench/bright/
