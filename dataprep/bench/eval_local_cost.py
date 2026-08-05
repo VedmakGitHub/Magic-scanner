@@ -12,12 +12,12 @@ import numpy as np
 import cv2
 
 random.seed(0)
-POOL, PER = 8000, 10
+POOL, PER = 8000, 40
 FULL_N = 49877
 CACHE = "dataprep/image_cache"
 ART = (0.06, 0.09, 0.94, 0.58)
 SHORTLIST, RATIO = 25, 0.75
-CONFIGS = [400, 200, 100, 50]
+CONFIGS = [100]
 
 db = sqlite3.connect("dataprep/out/cards.sqlite"); db.row_factory = sqlite3.Row
 iname, iimgs = {}, defaultdict(list)
