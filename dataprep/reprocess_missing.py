@@ -45,6 +45,7 @@ from build_bundle import (
     _open_checkpoint,
     collect_hash_jobs,
     load_json,
+    iter_bulk,
 )
 
 
@@ -98,7 +99,9 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
     args = ap.parse_args(argv[1:])
 
-    ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
+    ua_path = os.path.join(OUT_DIR, "unique_artwork.jsonl.gz")
+    if not os.path.exists(ua_path):  # legacy JSON-array download
+        ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
     checkpoint_path = os.path.join(OUT_DIR, "hashes_checkpoint.sqlite")
     sqlite_path = os.path.join(OUT_DIR, "cards.sqlite")
     missing_csv = os.path.join(OUT_DIR, "missing_images.csv")

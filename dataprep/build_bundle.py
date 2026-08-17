@@ -4,7 +4,7 @@ build_bundle.py — produce the card-data bundle the app downloads on first laun
 Implements Section 4 of Phase1_Android_MTG_Scanner_Build_Plan.md:
 
   1. Resolve Scryfall bulk-data URLs programmatically (4.2) — never hard-coded.
-  2. Download "unique_artwork" and "default_cards" bulk JSON.
+  2. Download "unique_artwork" and "default_cards" bulk data (gzipped JSONL).
   3. Build the `printings` table from default_cards (English printings; 4.4).
   4. Build the `hashes` table from unique_artwork: download each card's `normal`
      image and compute the reference pHash (4.3, Section 5.1).
@@ -104,8 +104,13 @@ def resolve_bulk_urls(wanted: Optional[set] = None) -> Dict[str, Dict[str, Any]]
 
 
 def download_bulk(obj: Dict[str, Any], dest: str) -> str:
-    """Download a bulk file from its `download_uri` (served from *.scryfall.io, 4.2)."""
-    uri = obj["download_uri"]
+    """Download a bulk file (served from *.scryfall.io, 4.2).
+
+    Scryfall replaced the old `download_uri` (one big JSON array) with
+    `jsonl_download_uri` (gzipped JSONL, ~1/30th the bytes). Prefer the new
+    field and fall back to the old one so historical objects still work.
+    """
+    uri = obj.get("jsonl_download_uri") or obj["download_uri"]
     print(f"  downloading {obj['type']} -> {os.path.basename(dest)}")
     with requests.get(uri, headers={"User-Agent": USER_AGENT}, stream=True, timeout=600) as r:
         r.raise_for_status()
@@ -122,6 +127,36 @@ def download_bulk(obj: Dict[str, Any], dest: str) -> str:
 def load_json(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def iter_bulk(path: str):
+    """Yield card objects from a Scryfall bulk file, streaming.
+
+    Handles the current gzipped-JSONL format (one JSON object per line) and the
+    legacy single-JSON-array files, chosen by magic bytes rather than filename so
+    a stale download still parses. Streaming keeps peak memory flat: All Cards is
+    ~400 MB gzipped and several GB expanded.
+    """
+    with open(path, "rb") as probe:
+        head = probe.read(2)
+    if head == b"\x1f\x8b":                      # gzip -> JSONL
+        import gzip as _gz
+        with _gz.open(path, "rt", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip().rstrip(",")
+                if line and line[0] == "{":
+                    yield json.loads(line)
+    elif head[:1] == b"[":                        # legacy JSON array
+        import ijson
+        with open(path, "rb") as f:
+            for card in ijson.items(f, "item"):
+                yield card
+    else:                                         # plain JSONL
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip().rstrip(",")
+                if line and line[0] == "{":
+                    yield json.loads(line)
 
 
 # ---------------------------------------------------------------------------
@@ -233,21 +268,20 @@ def build_printings(conn: sqlite3.Connection, default_cards: List[Dict[str, Any]
 
 def build_printings_all_languages(conn: sqlite3.Connection, all_cards_path: str,
                                   batch: int = 20000) -> int:
-    """All-language printings from the All Cards bulk, STREAMED with ijson so the
-    2.5 GB file never loads fully into memory. Includes every language so the app
-    can identify and resolve any card printed by Wizards (Section: any-language).
+    """All-language printings from the All Cards bulk, STREAMED via iter_bulk so
+    the file never loads fully into memory (~392 MB gzipped, several GB expanded).
+    Includes every language so the app can identify and resolve any card printed
+    by Wizards (Section: any-language).
     """
-    import ijson
     total = 0
     rows: List[Tuple] = []
-    with open(all_cards_path, "rb") as f:
-        for card in ijson.items(f, "item"):
-            rows.extend(_printing_rows_for_card(card))
-            if len(rows) >= batch:
-                conn.executemany(_PRINTINGS_INSERT, rows)
-                conn.commit()
-                total += len(rows)
-                rows.clear()
+    for card in iter_bulk(all_cards_path):
+        rows.extend(_printing_rows_for_card(card))
+        if len(rows) >= batch:
+            conn.executemany(_PRINTINGS_INSERT, rows)
+            conn.commit()
+            total += len(rows)
+            rows.clear()
     if rows:
         conn.executemany(_PRINTINGS_INSERT, rows)
         conn.commit()
@@ -693,8 +727,10 @@ def main(argv: List[str]) -> int:
     bulk = resolve_bulk_urls({"unique_artwork", printings_type})
     scryfall_updated_at = bulk[printings_type].get("updated_at", "")
 
-    ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
-    printings_path = os.path.join(OUT_DIR, f"{printings_type}.json")
+    # Scryfall now serves gzipped JSONL; keep the extension honest so iter_bulk's
+    # magic-byte probe and any manual inspection agree.
+    ua_path = os.path.join(OUT_DIR, "unique_artwork.jsonl.gz")
+    printings_path = os.path.join(OUT_DIR, f"{printings_type}.jsonl.gz")
 
     print("[2/6] Downloading bulk files ...")
     if not (args.keep_bulk and os.path.exists(printings_path)):
@@ -708,7 +744,7 @@ def main(argv: List[str]) -> int:
         # Streamed (ijson) so the 2.5 GB All Cards file never fully loads.
         card_count = build_printings_all_languages(conn, printings_path)
     else:
-        card_count = build_printings(conn, load_json(printings_path))
+        card_count = build_printings(conn, iter_bulk(printings_path))
     print(f"      printings rows: {card_count:,}")
 
     print("[4/6] Building hashes table ...")
@@ -716,7 +752,7 @@ def main(argv: List[str]) -> int:
         print("      --no-hash: skipping image download + hashing")
         hash_count = 0
     else:
-        unique_artwork = load_json(ua_path)
+        unique_artwork = list(iter_bulk(ua_path))
         hash_count = build_hashes(
             conn, unique_artwork, args.cache_dir, args.concurrency, args.limit,
             checkpoint_path, resume=not args.no_resume,

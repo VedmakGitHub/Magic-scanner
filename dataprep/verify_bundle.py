@@ -43,6 +43,7 @@ from build_bundle import (
     _cache_path,
     collect_hash_jobs,
     load_json,
+    iter_bulk,
 )
 
 _FAILS = 0
@@ -86,7 +87,9 @@ def main(argv: List[str]) -> int:
 
     sqlite_path = os.path.join(OUT_DIR, "cards.sqlite")
     manifest_path = os.path.join(OUT_DIR, "manifest.json")
-    ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
+    ua_path = os.path.join(OUT_DIR, "unique_artwork.jsonl.gz")
+    if not os.path.exists(ua_path):  # legacy JSON-array download
+        ua_path = os.path.join(OUT_DIR, "unique_artwork.json")
 
     if not os.path.exists(sqlite_path):
         print(f"cards.sqlite not found at {sqlite_path} — build first.")
@@ -158,7 +161,7 @@ def main(argv: List[str]) -> int:
     # not failures.
     print("[5] Completeness (resolvable artworks covered)")
     if os.path.exists(ua_path):
-        ua = load_json(ua_path)
+        ua = list(iter_bulk(ua_path))
         jobs = collect_hash_jobs(ua)
         printed_ill = {r[0] for r in conn.execute(
             "SELECT DISTINCT illustration_id FROM printings WHERE illustration_id IS NOT NULL"
