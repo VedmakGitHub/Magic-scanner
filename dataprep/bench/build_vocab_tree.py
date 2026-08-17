@@ -57,9 +57,9 @@ def add(i):
     if i in seen: return
     p = pfi(i)
     if p: seen.add(i); ref.append((iname[i].lower(), p))
-for nm in labels | {"brass man", "pink horror", "shadowblood ridge", "drownyard amalgam",
+for nm in sorted(labels | {"brass man", "pink horror", "shadowblood ridge", "drownyard amalgam",
                     "telepathy", "time warp", "sandblast", "never happened",
-                    "thundercloud elemental", "coral fighters", "ertai's meddling"}:
+                    "thundercloud elemental", "coral fighters", "ertai's meddling"}):
     for i in n2i.get(nm, []): add(i)
 al = list(iimgs); random.shuffle(al)
 for i in al:
