@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:opencv_core/opencv.dart' as cv;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/models.dart';
@@ -88,6 +89,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
   final TextEditingController _captureLabelCtrl = TextEditingController();
   bool _captureMode = false;
   bool _benchPending = false; // one-shot ORB on-device latency spike
+  bool _orbBusy = false; // guards the debug ORB-vs-pHash comparison
   int _captureCount = 0;
   DateTime _lastCapture = DateTime.fromMillisecondsSinceEpoch(0);
   static const _captureThrottleMs = 500;
@@ -240,6 +242,61 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
       }
     } finally {
       _busy = false;
+    }
+  }
+
+  /// DEBUG: run the ORB local-feature matcher on the SAME frame that pHash just
+  /// matched and log both verdicts side by side. Routing is untouched, so the
+  /// shipped pHash+OCR path cannot regress while we evaluate ORB on real cards.
+  /// The warp is fetched as a full JPEG because sqflite (and therefore the ORB
+  /// index) is main-isolate only; the offline 93.3% was measured on JPEG warps
+  /// from this same device, so the compression is already accounted for.
+  Future<void> _orbCompare(Uint8List nv21, int w, int h, int rotation,
+      String phashName, int phashDist) async {
+    if (_orbBusy) return;
+    _orbBusy = true;
+    cv.Mat? warp;
+    try {
+      final av = ref.read(orbMatcherProvider);
+      final orb = av.valueOrNull;
+      if (orb == null) {
+        debugPrint('ORB-VS-PHASH skipped: matcher null '
+            '(loading=${av.isLoading} error=${av.hasError ? av.error : "none"})');
+        return;
+      }
+      final sw = Stopwatch()..start();
+      final jpeg = (await _proc!
+              .process(nv21, w, h, rotation, jpegFromLast: true, fullWarp: true))
+          .warpJpeg;
+      if (jpeg == null) {
+        debugPrint('ORB-VS-PHASH skipped: no warp jpeg');
+        return;
+      }
+      final tJpeg = sw.elapsedMilliseconds;
+      sw.reset();
+      sw.start();
+      warp = cv.imdecode(jpeg, cv.IMREAD_COLOR);
+      final tDecode = sw.elapsedMilliseconds;
+      sw.reset();
+      sw.start();
+      final res = await orb.identify(warp);
+      final tOrb = sw.elapsedMilliseconds;
+      String orbName = '(rejected)';
+      if (res != null) {
+        final pr = await ref
+            .read(cardDatabaseProvider.future)
+            .then((db) => db.representativeForIllustration(res.illustrationId));
+        orbName = pr?.name ?? res.illustrationId;
+      }
+      final agree = res != null && orbName == phashName;
+      debugPrint('ORB-VS-PHASH phash="$phashName"(d=$phashDist) '
+          'orb="$orbName"(inl=${res?.inliers ?? -1} m=${res?.matches ?? -1}) '
+          'agree=$agree | jpeg=${tJpeg}ms decode=${tDecode}ms orb=${tOrb}ms');
+    } catch (e) {
+      debugPrint('ORB-VS-PHASH failed: $e');
+    } finally {
+      warp?.dispose();
+      _orbBusy = false;
     }
   }
 
@@ -408,6 +465,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
     final card = resolved;
     final key = card.illustrationId ?? card.scryfallId;
 
+    if (kScanDebug) {
+      await _orbCompare(nv21, w, h, rotation, card.name, best);
+    }
     if (kScanDebug) {
       debugPrint('scan pick=${card.name} dist=$best margin=${second - best} '
           'tie=$nearTie detect=${res.detectMs}ms match=${matchMs}ms ocr=${ocrMs}ms '

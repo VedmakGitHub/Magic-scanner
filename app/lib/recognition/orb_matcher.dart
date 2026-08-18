@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -50,41 +52,61 @@ class OrbMatcher {
   /// accepted and 0% of impostors.
   static const int minInliers = 8;
 
-  static Future<OrbMatcher?> load(Database db) async {
+  /// Load from FILES beside the database, not sqlite BLOBs.
+  ///
+  /// Android caps a single query row at ~2 MB (CursorWindow), so sqflite cannot
+  /// return the 2.1 MB vocabulary or the 57 MB posting arrays at all -- it
+  /// throws "Row too big to fit into CursorWindow". Files have no such limit,
+  /// load faster and can be mmapped later. `orb_desc` stays in sqlite because
+  /// its rows are ~3.2 KB, comfortably under the cap.
+  static Future<OrbMatcher?> load(Database db, String dir) async {
     try {
-      final metaRows = await db.query('orb_meta');
-      if (metaRows.isEmpty) return null;
-      final meta = {
-        for (final r in metaRows) r['key'] as String: r['value'] as String
-      };
-      if (meta['postings_prebuilt'] != '1') return null;
+      final mf = File('$dir/orb/index.json');
+      if (!mf.existsSync()) {
+        print('ORB-LOAD: no orb/index.json in $dir -> pHash-only bundle');
+        return null;
+      }
+      final m = jsonDecode(await mf.readAsString()) as Map<String, dynamic>;
+      final k = m['k'] as int;
 
-      final v = await db.query('orb_vocab', limit: 1);
-      final ix = await db.query('orb_index', limit: 1);
-      if (v.isEmpty || ix.isEmpty) return null;
+      Future<Uint8List> rd(String n) async {
+        final f = File('$dir/orb/$n');
+        if (!f.existsSync()) throw StateError('missing $n');
+        return f.readAsBytes();
+      }
 
-      final k = int.parse(meta['k']!);
-      // BFMatcher trains against the centroid set exactly like any descriptor set.
-      final vocab = cv.Mat.fromList(
-          k, 32, cv.MatType.CV_8UC1, v.first['centroids'] as Uint8List);
-      final idfBytes = (await db.query('orb_idf', limit: 1)).first['idf'] as Uint8List;
-      final cards = await db.query('orb_cards', orderBy: 'idx');
+      final sw = Stopwatch()..start();
+      final vocabBytes = await rd('vocab.bin');
+      final idfBytes = await rd('idf.bin');
+      final pc = await rd('post_card.bin');
+      final pw = await rd('post_weight.bin');
+      final wo = await rd('word_offset.bin');
+      final cards = const LineSplitter()
+          .convert(await File('$dir/orb/cards.txt').readAsString());
+      final vocab = cv.Mat.fromList(k, 32, cv.MatType.CV_8UC1, vocabBytes);
+      print('ORB-LOAD: ${cards.length} cards, ${m['postings']} postings, '
+          '${(pc.length + pw.length + vocabBytes.length) ~/ 1000000} MB '
+          'in ${sw.elapsedMilliseconds}ms');
 
       return OrbMatcher._(
         db,
         vocab,
         _f32(idfBytes),
-        _i32(ix.first['post_card'] as Uint8List),
-        _f32(ix.first['post_weight'] as Uint8List),
-        _i32(ix.first['word_offset'] as Uint8List),
-        [for (final c in cards) c['illustration_id'] as String],
-        int.parse(meta['soft']!),
-        int.parse(meta['nfeatures']!),
-        meta['art_box']!.split(',').map(double.parse).toList(),
-        int.parse(meta['resize_long_edge']!),
+        _i32(pc),
+        _f32(pw),
+        _i32(wo),
+        cards,
+        m['soft'] as int,
+        m['nfeatures'] as int,
+        (m['art_box'] as String).split(',').map(double.parse).toList(),
+        m['resize_long_edge'] as int,
       );
-    } catch (_) {
-      return null; // no ORB tables in this bundle -> caller falls back to pHash
+    } catch (e, st) {
+      // Never swallow: a null matcher and a failed load look identical to the
+      // caller, which already cost one debugging round-trip.
+      print('ORB-LOAD FAILED: $e');
+      print('$st');
+      return null;
     }
   }
 

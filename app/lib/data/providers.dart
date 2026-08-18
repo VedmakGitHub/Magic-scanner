@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
+import '../recognition/orb_matcher.dart';
 import '../recognition/matcher.dart';
 import '../recognition/recognition_service.dart';
 import 'bundle_loader.dart';
@@ -132,3 +134,13 @@ class CollectionController
 
 final collectionControllerProvider = StateNotifierProvider<CollectionController,
     AsyncValue<List<CollectionEntry>>>((ref) => CollectionController(ref));
+
+
+/// The ORB local-feature matcher, loaded from the bundle's own tables.
+/// Null for bundles built before the ORB index existed, so the app degrades
+/// to the pHash path instead of failing.
+final orbMatcherProvider = FutureProvider<OrbMatcher?>((ref) async {
+  final cards = await ref.watch(cardDatabaseProvider.future);
+  final dir = (await getApplicationDocumentsDirectory()).path;
+  return OrbMatcher.load(cards.raw, dir);
+});

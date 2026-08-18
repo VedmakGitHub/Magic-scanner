@@ -10,6 +10,10 @@ class CardDatabase {
   final Database _db;
   CardDatabase._(this._db);
 
+  /// Raw handle so the ORB matcher can read its own bundle tables
+  /// (orb_vocab / orb_index / orb_desc) without duplicating the opener.
+  Database get raw => _db;
+
   static Future<CardDatabase> open(String path) async {
     final db = await openReadOnlyDatabase(path);
     return CardDatabase._(db);
