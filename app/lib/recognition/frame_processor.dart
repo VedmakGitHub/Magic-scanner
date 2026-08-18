@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -59,7 +60,8 @@ class FrameProcessor {
       bool jpegOnly = false,
       bool jpegFromLast = false,
       bool fullWarp = false,
-      bool orbBench = false}) {
+      bool orbBench = false,
+      String benchDir = ''}) {
     final c = Completer<FrameResult>();
     _pending = c;
     // jpegFromLast/orbBench reuse the cached warp: no frame bytes to transfer.
@@ -74,6 +76,7 @@ class FrameProcessor {
       jpegFromLast,
       fullWarp,
       orbBench,
+      benchDir,
     ));
     return c.future;
   }
@@ -99,7 +102,7 @@ class FrameProcessor {
             return;
           }
           main.send(FrameResult(true, const [], wimg.width, wimg.height, null,
-              null, sw.elapsedMilliseconds, _orbBench(wimg)));
+              null, sw.elapsedMilliseconds, _orbBench(wimg, msg.benchDir)));
           return;
         }
         if (msg.jpegFromLast) {
@@ -165,7 +168,7 @@ class FrameProcessor {
   ///   ransac      findHomography on the genuine candidate (accept/reject)
   /// References are synthetic (1 genuine self-match + 9 random) purely to time
   /// the matcher; only latency is meaningful here, not accuracy.
-  static Map<String, int> _orbBench(img.Image warp) {
+  static Map<String, int> _orbBench(img.Image warp, String benchDir) {
     final out = <String, int>{};
     final sw = Stopwatch();
     cv.Mat? src, gray, art, small, eq, desc, mask;
@@ -255,6 +258,63 @@ class FrameProcessor {
         dm.dispose();
       }
       out['ransac'] = sw.elapsedMilliseconds;
+
+      // (2) QUANTIZATION: assign descriptors to words against the 65,536
+      // binary centroids (2.1 MB, pushed to benchDir). This is the dominant
+      // cost in the offline design (22.5 ms desktop) and the biggest unknown.
+      final vf = File('$benchDir/vocab_bin.dat');
+      if (vf.existsSync()) {
+        final vb = vf.readAsBytesSync();
+        final rows = vb.length ~/ 32;
+        final vocab = cv.Mat.fromList(rows, 32, cv.MatType.CV_8UC1, vb);
+        sw..reset()..start();
+        final bfq = cv.BFMatcher.create(type: cv.NORM_HAMMING);
+        final qm = bfq.knnMatch(desc, vocab, 3);
+        out['quantize'] = sw.elapsedMilliseconds;
+        out['qwords'] = qm.length;
+        out['vocabRows'] = rows;
+        vocab.dispose();
+      } else {
+        out['quantize'] = -1; // vocab not pushed
+      }
+
+      // (4) PARITY: dump the exact preprocessed input + the descriptors this
+      // device produced, so the offline side can re-extract from the same
+      // pixels and diff byte-for-byte. If dartcv4's ORB differs from
+      // opencv-python's, the offline-built index cannot match device queries.
+      if (benchDir.isNotEmpty) {
+        try {
+          final g = cv.imencode('.png', eq).$2;
+          File('$benchDir/parity_input.png').writeAsBytesSync(g);
+          final dbytes = Uint8List(desc.rows * desc.cols);
+          var k = 0;
+          for (var r = 0; r < desc.rows; r++) {
+            for (var cc = 0; cc < desc.cols; cc++) {
+              dbytes[k++] = desc.at<int>(r, cc);
+            }
+          }
+          File('$benchDir/parity_desc.bin').writeAsBytesSync(dbytes);
+          out['parityRows'] = desc.rows;
+          out['parityCols'] = desc.cols;
+        } catch (_) {
+          out['parityRows'] = -1;
+        }
+      }
+
+      // (3) MEMORY: resident set size, plus a probe allocation the size of the
+      // planned in-RAM inverted index (~109 MB at 50k) to see if the device
+      // tolerates it alongside the camera pipeline.
+      out['rssMB'] = (ProcessInfo.currentRss / 1e6).round();
+      try {
+        final probe = Int32List(13500000);   // ~54 MB of posting ids
+        final probeW = Float32List(13500000); // ~54 MB of weights
+        probe[0] = 1; probeW[0] = 1.0;
+        out['rssIndexMB'] = (ProcessInfo.currentRss / 1e6).round();
+        out['probeOk'] = probe.length + probeW.length;
+      } catch (_) {
+        out['probeOk'] = -1;  // OOM: the in-RAM index plan is not viable as-is
+      }
+
       out['total'] = (out['toMat'] ?? 0) +
           (out['prep'] ?? 0) +
           (out['orb'] ?? 0) +
@@ -288,6 +348,8 @@ class _FrameJob {
   final bool jpegFromLast;
   final bool fullWarp;
   final bool orbBench;
+  final String benchDir;
   const _FrameJob(this.data, this.w, this.h, this.rotation, this.full,
-      this.jpegOnly, this.jpegFromLast, this.fullWarp, this.orbBench);
+      this.jpegOnly, this.jpegFromLast, this.fullWarp, this.orbBench,
+      this.benchDir);
 }

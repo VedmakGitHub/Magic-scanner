@@ -214,8 +214,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen>
           // Step D spike: full pass populates the cached warp, then time ORB.
           final full = await _proc!.process(bytes, w, h, rotation, full: true);
           if (full.found) {
-            final b = await _proc!.process(bytes, w, h, rotation, orbBench: true);
+            // Bench needs a writable dir it can read the pushed vocabulary
+            // from and dump parity artifacts to; path_provider is main-isolate
+            // only, so resolve it here and pass it in.
+            final bdir = (await getExternalStorageDirectory())?.path ?? '';
+            final b = await _proc!
+                .process(bytes, w, h, rotation, orbBench: true, benchDir: bdir);
             debugPrint('ORB-BENCH ${b.timings}');
+            debugPrint('ORB-BENCH dir=$bdir');
             _benchPending = false;
             if (mounted) setState(() {});
           }

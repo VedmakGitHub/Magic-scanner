@@ -33,3 +33,4 @@ dataprep/bench/orb_refs_all.npz
 dataprep/bench/desc_cache.pkl
 dataprep/bench/vocab_tree.npz
 dataprep/bench/vocab_flat65k.npy
+dataprep/bench/vocab_bin*.dat
