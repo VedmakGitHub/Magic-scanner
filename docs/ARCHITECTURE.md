@@ -131,6 +131,22 @@ Suggested next: cheap wins = OCR-path speedups (P-D pre-warm, P-B reuse warp), e
 
 ---
 
+## ORB build-out — state and open gaps (reviewed 2026-08-18)
+
+**Working:** production index built (50,747 cards, 14.2M postings), loads on device from files in ~650 ms (116 MB), descriptor parity device↔desktop confirmed, and the matcher identified **6/6 cards on device including Flare / Force / Strategic** — the three that currently force an ~800 ms OCR fallback. Offline accuracy 93.3% @ N=50 over the full corpus; rejection 0% false accepts at ≥8 inliers.
+
+**Gaps, severity order — none of these are started:**
+1. **Distribution is the blocker.** `bundle_loader.dart` has ZERO knowledge of the ORB files; the 119 MB index exists on one phone only because it was `adb push`ed. Manifest, download, verification and unpack all need extending, and the download roughly triples (90 MB → ~250 MB).
+2. **No bundle↔index version binding.** `orb_meta` does NOT record `bundle_version`, so a bundle update without an index rebuild would silently drift `illustration_id`s and resolve to wrong/missing cards. Fix: stamp at build, verify at load. Same class of mismatch as the stale descriptor cache.
+3. **ORB is not routed** — it runs only as a logged comparison, so there is no user-visible benefit yet.
+4. **Latency 213–413 ms**, dominated by 50 sequential sqflite round-trips plus a JPEG encode that exists only to cross the isolate boundary.
+5. **Memory unproven at the low end:** 116 MB resident, peak RSS ~694 MB, validated on one 8 GB device; a 4 GB phone could be LMK-killed.
+6. **`kScanDebug = true`** — debug logging plus the REC capture bar and BENCH button are live; must be off for release.
+7. **No ORB tests.** pHash has a parity contract enforced by tests; ORB has none, despite parity being load-bearing.
+8. **Footprint ~551 MB** (432 MB DB + 119 MB index) before the image cache.
+
+**Recommended order when resuming:** (1) stamp+verify `bundle_version` in `orb_meta` and (2) batch the `orb_desc` reads — both small, one prevents a silent-corruption bug class; then (3) hybrid routing (pHash confident → add, else ORB at ≥8 inliers, OCR demoted to tertiary) which is where hard cards go ~1 s → ~0.3 s; then (4) ORB into the frame isolate. Distribution (gap 1) is the largest remaining chunk and deserves its own session.
+
 ## Change-proposal format
 Before changing anything in the baseline table or a pipeline step, state:
 
