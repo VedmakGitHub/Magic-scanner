@@ -306,10 +306,24 @@ class FrameProcessor {
       // tolerates it alongside the camera pipeline.
       out['rssMB'] = (ProcessInfo.currentRss / 1e6).round();
       try {
-        final probe = Int32List(13500000);   // ~54 MB of posting ids
-        final probeW = Float32List(13500000); // ~54 MB of weights
-        probe[0] = 1; probeW[0] = 1.0;
+        // The planned in-RAM inverted index is ~13.5M postings: an Int32 card
+        // id + a Float32 weight each (~109 MB). Typed arrays commit lazily, so
+        // the first version of this probe allocated without touching and RSS
+        // barely moved -- proving nothing. TOUCH EVERY PAGE (4 KB = 1024
+        // int32s) so the pages are actually committed, then read RSS.
+        final probe = Int32List(13500000);
+        final probeW = Float32List(13500000);
+        for (var i = 0; i < probe.length; i += 1024) {
+          probe[i] = i;
+          probeW[i] = i * 0.5;
+        }
+        // sum a sample so the writes cannot be optimised away
+        var acc = 0;
+        for (var i = 0; i < probe.length; i += 65536) {
+          acc += probe[i];
+        }
         out['rssIndexMB'] = (ProcessInfo.currentRss / 1e6).round();
+        out['probeSum'] = acc == 0 ? 0 : 1;
         out['probeOk'] = probe.length + probeW.length;
       } catch (_) {
         out['probeOk'] = -1;  // OOM: the in-RAM index plan is not viable as-is
