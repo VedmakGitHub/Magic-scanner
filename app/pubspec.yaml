@@ -1,0 +1,53 @@
+name: mtg_scanner
+description: "Phase 1 MVP — offline Android MTG card scanner."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management (Section 2).
+  flutter_riverpod: ^2.5.1
+
+  # On-device DB. The plan prefers drift; we use sqflite (explicitly allowed
+  # "if simpler") to keep the codebase free of build_runner-generated sources.
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  path_provider: ^2.1.4
+
+  # Camera capture + pixel access / hashing (Section 2).
+  camera: ^0.11.0+2
+  image: ^4.2.0
+
+  # HTTP download + lazy image display/cache (Section 2).
+  dio: ^5.7.0
+  cached_network_image: ^3.4.1
+  flutter_svg: ^2.0.10+1 # Scryfall set-symbol SVGs (rarity-tinted)
+
+  # Persisted scan settings (quick mode, lock set, etc.).
+  shared_preferences: ^2.3.2
+
+  # On-device OCR tiebreaker — disambiguates visually-similar cards by name.
+  google_mlkit_text_recognition: ^0.13.1
+
+  # Bundle handling.
+  archive: ^3.6.1 # gzip unpack of the data bundle
+  crypto: ^3.0.5 # sha256 verification of the bundle
+
+  cupertino_icons: ^1.0.8
+  opencv_core: ^1.4.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/testlist.json

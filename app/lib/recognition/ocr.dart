@@ -1,0 +1,118 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+
+/// On-device OCR used only as a TIEBREAKER when pHash returns a cluster of
+/// visually-similar cards (e.g. busy blue retro frames). We read the card's
+/// printed text from the warped image and pick the candidate whose name matches.
+class CardOcr {
+  CardOcr._();
+
+  static final TextRecognizer _recognizer =
+      TextRecognizer(script: TextRecognitionScript.latin);
+  static String? _tmpPath;
+  static bool _warmed = false;
+  static Future<void>? _warming;
+
+  /// Pre-load the ML Kit text model so the FIRST real tiebreak doesn't pay the
+  /// one-time ~1s model-load penalty (measured: first OCR ~2000 ms vs ~900 ms
+  /// warm). Fire this once at startup; [readText] AWAITS it, so the load is paid
+  /// during idle startup/lineup time rather than by the first hard card, and no
+  /// real read races the model load. Cached — safe to call more than once.
+  static Future<void> warmUp() => _warming ??= _doWarmUp();
+
+  static Future<void> _doWarmUp() async {
+    try {
+      // Warm at ~the real title-strip size (top 15% of the 488x680 warp, 2x) so
+      // the model initializes for the scale it will actually see.
+      final im = img.Image(width: 976, height: 204);
+      img.fill(im, color: img.ColorRgb8(255, 255, 255));
+      await _recognize(Uint8List.fromList(img.encodeJpg(im, quality: 90)));
+    } catch (_) {
+      // best-effort
+    }
+    _warmed = true;
+  }
+
+  /// OCR the warped-card JPEG and return its raw text (empty on failure). Waits
+  /// for the one-time warm-up to finish first, so a real read never races (and
+  /// pays) the model load.
+  static Future<String> readText(Uint8List jpeg) async {
+    final warming = _warming;
+    if (warming != null && !_warmed) {
+      try {
+        await warming;
+      } catch (_) {}
+    }
+    return _recognize(jpeg);
+  }
+
+  static Future<String> _recognize(Uint8List jpeg) async {
+    try {
+      _tmpPath ??= '${(await getTemporaryDirectory()).path}/ocr_scan.jpg';
+      await File(_tmpPath!).writeAsBytes(jpeg, flush: true);
+      final result =
+          await _recognizer.processImage(InputImage.fromFilePath(_tmpPath!));
+      return result.text;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  static String normalize(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9 ]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  /// Index of the best-matching name in [names] for the OCR [text], or -1 if no
+  /// candidate matches confidently. Names are matched on the front-face portion
+  /// (before " // ") so DFCs work; a full substring hit wins, else token overlap.
+  static int bestMatch(String text, List<String> names, {double minScore = 0.6}) {
+    final hay = normalize(text);
+    if (hay.isEmpty) return -1;
+    final hayTokens = hay.split(' ').toSet();
+    var bestIndex = -1;
+    var bestScore = 0.0;
+    for (var i = 0; i < names.length; i++) {
+      final name = normalize(names[i].split('//').first);
+      if (name.isEmpty) continue;
+      double score;
+      if (hay.contains(name)) {
+        score = 1.0;
+      } else {
+        final tokens = name.split(' ').where((t) => t.length > 2).toSet();
+        if (tokens.isEmpty) continue;
+        final overlap = tokens.where(hayTokens.contains).length / tokens.length;
+        score = overlap;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestScore >= minScore ? bestIndex : -1;
+  }
+
+  /// Find the longest bundle card name that appears in the OCR [text]. [names]
+  /// is a precomputed list of (normalized name, original name). Returns the
+  /// original name, or null if none is present. Used when the true card is not
+  /// in the pHash shortlist (look the read name up in the full bundle).
+  static String? matchBundleName(
+      String text, List<({String norm, String name})> names) {
+    final hay = normalize(text);
+    if (hay.length < 3) return null;
+    String? best;
+    var bestLen = 0;
+    for (final n in names) {
+      if (n.norm.length > bestLen && n.norm.length >= 3 && hay.contains(n.norm)) {
+        best = n.name;
+        bestLen = n.norm.length;
+      }
+    }
+    return best;
+  }
+}

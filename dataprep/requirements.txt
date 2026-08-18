@@ -1,0 +1,9 @@
+# dataprep pipeline dependencies (Python 3.11+)
+# Lower bounds chosen for broad interpreter compatibility (3.11 - 3.14).
+# The phash core is pure-Python (no numpy/scipy) so that its float arithmetic
+# stays bit-identical to the Dart implementation; Pillow is used only to decode
+# images to RGB.
+requests>=2.31
+Pillow>=10.3
+tqdm>=4.66
+ijson>=3.2   # streaming parser for the 2.5 GB All Cards bulk (--languages all)

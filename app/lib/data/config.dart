@@ -1,0 +1,35 @@
+/// App-wide constants and the data-bundle endpoints (Sections 0.2, 4.5, 9).
+class AppConfig {
+  AppConfig._();
+
+  static const appName = 'MTGScanner';
+  static const appVersion = '0.1.0';
+
+  /// A specific User-Agent is REQUIRED on all Scryfall requests (Section 9, 4.2).
+  static const userAgent = '$appName/$appVersion (Android; Phase1 MVP)';
+
+  /// Fixed-tag GitHub Release manifest URL (Section 0.2). Replace <owner>/<repo>.
+  /// This is a direct asset-download URL, so it never hits the rate-limited
+  /// api.github.com.
+  static const manifestUrl =
+      'https://github.com/VedmakGitHub/Magic-scanner/releases/download/data-bundle/manifest.json';
+
+  /// Scryfall image CDN base (Section 4.6).
+  static const scryfallImageBase = 'https://cards.scryfall.io';
+
+  /// Filenames in the app documents dir.
+  static const bundleDbFileName = 'cards.sqlite';
+  static const collectionDbFileName = 'collection.sqlite';
+  static const bundleVersionKey = 'bundle_version';
+
+  /// Matching thresholds for the 256-bit hash (Section 5.2) — tune during
+  /// acceptance testing. Real-photo true matches were ~84 vs ~90 nearest-random
+  /// in offline tests, so these are deliberately generous.
+  // Multi-scale inset matching collapses true-match distances to ~20–64, so a
+  // confident match is simply best <= strongMatchMaxDistance (rank-1 was 15/15
+  // on the on-device benchmark; gap-based ambiguity is no longer needed).
+  static const int strongMatchMaxDistance = 70;
+  static const int weakMatchMinDistance = 100;
+  static const int ambiguousGap = 6; // retained for the candidate-sheet hint
+  static const int topK = 5;
+}
